@@ -534,7 +534,7 @@ class SlabGenerator(object):
         resulting in loss of stoichiometry.
         """
         sym = symmetry.Symmetry(slab)
-        inversion_symmetric = sym.get_point_group(check_laue=True)[1]
+        inversion_symmetric = sym.get_pointgroup(check_laue=True)[1]
 
         # Trim the cell until it is symmetric
         while not inversion_symmetric:
@@ -543,7 +543,7 @@ class SlabGenerator(object):
             del slab[tags == bottom_layer]
 
             sym = symmetry.Symmetry(slab)
-            inversion_symmetric = sym.get_point_group(check_laue=True)[1]
+            inversion_symmetric = sym.get_pointgroup(check_laue=True)[1]
 
             if len(slab) <= len(self._bulk):
                 warnings.warn('Too many sites removed, please use a larger '
