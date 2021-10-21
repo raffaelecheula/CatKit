@@ -7,6 +7,7 @@ import itertools
 import networkx as nx
 import numpy as np
 import scipy
+from ase.build.tools import rotation_matrix
 radii = defaults.get('radii')
 
 
@@ -251,7 +252,7 @@ class AdsorptionSites():
 
         return periodic_match
 
-    def get_symmetric_sites(self, unique=True, screen=True):
+    def get_symmetric_sites(self, unique=True, screen=True, site_name=None):
         """Determine the symmetrically unique adsorption sites
         from a list of fractional coordinates.
 
@@ -297,13 +298,17 @@ class AdsorptionSites():
         if screen:
             periodic = self.get_periodic_sites()
             symmetry_match = symmetry_match[periodic]
+        
+        if site_name:
+            symmetry_match = np.array([s for s in symmetry_match 
+                                       if self.names[s] in site_name])
+
         if unique:
             return np.unique(symmetry_match)
-
         else:
             return symmetry_match
 
-    def get_adsorption_vectors(self, unique=True, screen=True):
+    def get_adsorption_vectors(self, unique=True, screen=True, site_name=None):
         """Returns the vectors representing the furthest distance from
         the neighboring atoms.
 
@@ -314,7 +319,8 @@ class AdsorptionSites():
         """
         top_coords = self.coordinates[self.connectivity == 1]
         if unique:
-            sel = self.get_symmetric_sites(screen=screen)
+            sel = self.get_symmetric_sites(screen=screen,
+                                           site_name=site_name)
         else:
             sel = self.get_periodic_sites(screen=screen)
         coords = self.coordinates[sel]
@@ -322,7 +328,7 @@ class AdsorptionSites():
         r2top = self.r2_topology[sel]
 
         vectors = np.empty((coords.shape[0], 3))
-        for i, s in enumerate(coords):
+        for i, _ in enumerate(coords):
             plane_points = np.array(list(r1top[i]) + list(r2top[i]), dtype=int)
             vectors[i] = utils.plane_normal(top_coords[plane_points])
 
@@ -421,13 +427,10 @@ class AdsorptionSites():
         if sites_names is None:
             sites_names = [None, None]
 
-        sym = self.get_symmetric_sites()
+        sym = self.get_symmetric_sites(site_name=sites_names[0])
         sym_all = self.get_symmetric_sites(unique=False, screen=False)
         coords = self.coordinates[:, :2]
         topology = self.r1_topology
-
-        if sites_names[0]:
-            sym = [s for s in sym if self.names[s] in sites_names[0]]
 
         edges = []
         edges_sym = []
@@ -582,12 +585,16 @@ class Builder(AdsorptionSites):
 
         elif len(bonds) == 1:
             if index == -1:
+                if sites_names is None or type(sites_names[0]) == str:
+                    sites_names = [sites_names]
                 slab = []
-                for i, _ in enumerate(self.get_symmetric_sites()):
+                for i, _ in enumerate(
+                        self.get_symmetric_sites(site_name=sites_names[0])):
                     slab += [self._single_adsorption(
                         adsorbate,
                         bond=bonds[0],
                         site_index=i,
+                        site_name=sites_names[0],
                         auto_construct=auto_construct,
                         **kwargs)]
             elif isinstance(index, (list, np.ndarray)):
@@ -597,6 +604,7 @@ class Builder(AdsorptionSites):
                         adsorbate,
                         bond=bonds[0],
                         site_index=i,
+                        site_name=sites_names[0],
                         auto_construct=auto_construct,
                         **kwargs)]
             else:
@@ -604,6 +612,7 @@ class Builder(AdsorptionSites):
                     adsorbate,
                     bond=bonds[0],
                     site_index=index,
+                    site_name=sites_names[0],
                     auto_construct=auto_construct,
                     **kwargs)
 
@@ -626,12 +635,23 @@ class Builder(AdsorptionSites):
                         adsorbate,
                         bonds=bonds,
                         edge_index=i,
+                        auto_construct=auto_construct,
+                        **kwargs)]
+            elif isinstance(index, (list, np.ndarray)):
+                slab = []
+                for i in index:
+                    slab += [self._double_adsorption(
+                        adsorbate,
+                        bonds=bonds,
+                        edge_index=i,
+                        auto_construct=auto_construct,
                         **kwargs)]
             else:
                 slab = self._double_adsorption(
                     adsorbate,
                     bonds=bonds,
                     edge_index=index,
+                    auto_construct=auto_construct,
                     **kwargs)
 
         else:
@@ -645,6 +665,7 @@ class Builder(AdsorptionSites):
             bond,
             slab=None,
             site_index=0,
+            site_name=None,
             auto_construct=True,
             symmetric=True):
         """Bond and adsorbate by a single atom."""
@@ -654,8 +675,10 @@ class Builder(AdsorptionSites):
         atoms.set_cell(slab.cell)
 
         if symmetric:
-            ind = self.get_symmetric_sites()[site_index]
-            vector = self.get_adsorption_vectors()[site_index]
+            ind = self.get_symmetric_sites(
+                site_name=site_name)[site_index]
+            vector = self.get_adsorption_vectors(
+                site_name=site_name)[site_index]
         else:
             ind = self.get_periodic_sites()[site_index]
             vector = self.get_adsorption_vectors(unique=False)[site_index]
@@ -669,7 +692,7 @@ class Builder(AdsorptionSites):
         R = radii[numbers]
         base_position = utils.trilaterate(top_sites[u], r + R, vector)
 
-        branches = nx.bfs_successors(atoms.graph, bond)
+        #branches = nx.bfs_successors(atoms.graph, bond)
         atoms.translate(-atoms.positions[bond])
 
         if auto_construct:
@@ -688,13 +711,14 @@ class Builder(AdsorptionSites):
 
         return slab
 
-    def _double_adsorption(self, adsorbate,
-                           bonds=None, edge_index=0):
+    def _double_adsorption(self, adsorbate, bonds=None,
+                           auto_construct=True, edge_index=0):
         """Bond and adsorbate by two adjacent atoms."""
         slab = self.slab.copy()
         atoms = adsorbate.copy()
         atoms.set_cell(slab.cell)
         edges = self.edges
+        graph = atoms.graph
 
         numbers = atoms.numbers[bonds]
         R = radii[numbers] * 0.95
@@ -710,6 +734,9 @@ class Builder(AdsorptionSites):
         n = np.linalg.norm(vec)
         uvec0 = vec / n
         d = np.sum(radii[numbers]) * 0.95
+        if bonds not in graph.edges:
+            d = np.linalg.norm((atoms[bonds[0]].position
+                               -atoms[bonds[1]].position))
         dn = (d - n) / 2
 
         base_position0 = coords[0] - uvec0 * dn
@@ -719,35 +746,79 @@ class Builder(AdsorptionSites):
         atoms[bonds[0]].position = base_position0
         atoms[bonds[1]].position = base_position1
 
-        # Temporarily break adsorbate bond
-        atoms.graph.remove_edge(*bonds)
-
         vectors = self.get_adsorption_vectors(screen=False, unique=False)
         uvec1 = vectors[edges[edge_index]]
         uvec2 = np.cross(uvec1, uvec0)
         uvec2 /= -np.linalg.norm(uvec2, axis=1)[:, None]
         uvec1 = np.cross(uvec2, uvec0)
 
-        branches0 = list(nx.bfs_successors(atoms.graph, bonds[0]))
-        if len(branches0[0][1]) != 0:
-            uvec = [-uvec0, uvec1[0], uvec2[0]]
-            self._branch_bidentate(atoms, uvec, branches0[0])
-            for branch in branches0[1:]:
-                catkit.gen.molecules._branch_molecule(
-                    atoms, branch, adsorption=True)
+        center = adsorbate[bonds[0]].position
+        center_new = atoms[bonds[0]].position
+        a1 = adsorbate[bonds[1]].position-center
+        a2 = atoms[bonds[1]].position-center_new
+        b1 = [0, 0, 1]
+        b2 = uvec1[0].tolist()
+        rot_matrix = rotation_matrix(a1, a2, b1, b2)
 
-        branches1 = list(nx.bfs_successors(atoms.graph, bonds[1]))
-        if len(branches1[0][1]) != 0:
-            uvec = [uvec0, uvec1[0], uvec2[0]]
-            self._branch_bidentate(atoms, uvec, branches1[0])
-            for branch in branches1[1:]:
-                catkit.gen.molecules._branch_molecule(
-                    atoms, branch, adsorption=True)
+        if auto_construct is True:
+            # Temporarily break adsorbate bond
+            if bonds in graph.edges:
+                links = []
+                graph.remove_edge(*bonds)
+            else:
+                links = [i for i in graph.neighbors(bonds[0])
+                         if i in graph.neighbors(bonds[1])]
+                for k in links:
+                    graph.remove_edge(bonds[0], k)
+                    graph.remove_edge(bonds[1], k)
+
+            branches0 = list(nx.bfs_successors(graph, bonds[0]))
+            if len(branches0[0][1]) != 0:
+                uvec = [-uvec0, uvec1[0], uvec2[0]]
+                self._branch_bidentate(atoms, uvec, branches0[0])
+                for branch in branches0[1:]:
+                    positions = catkit.gen.molecules._branch_molecule(
+                        atoms, branch, adsorption=True)
+                    for j, b in enumerate(branch[1]):
+                        atoms[b].position = positions[j]
+            
+            branches1 = list(nx.bfs_successors(graph, bonds[1]))
+            if len(branches1[0][1]) != 0:
+                uvec = [uvec0, uvec1[0], uvec2[0]]
+                self._branch_bidentate(atoms, uvec, branches1[0])
+                for branch in branches1[1:]:
+                    positions = catkit.gen.molecules._branch_molecule(
+                        atoms, branch, adsorption=True)
+                    for j, b in enumerate(branch[1]):
+                        atoms[b].position = positions[j]
+        
+            for k in links:
+                atoms[k].position = np.dot(atoms[k].position-center,
+                                           rot_matrix.T)+center_new
+                branches2 = list(nx.bfs_successors(graph, k))
+                for b in branches2[0][1]:
+                    atoms[b].position = np.dot(atoms[b].position-center,
+                                               rot_matrix.T)+center_new
+
+        else:
+            other_atoms = [i for i, _ in enumerate(atoms)
+                           if i not in bonds]
+
+            for k in other_atoms:
+                atoms[k].position = np.dot(atoms[k].position-center,
+                                           rot_matrix.T)+center_new
 
         n = len(slab)
         slab += atoms
+        
         # Add graph connections
-        slab.graph.add_edge(*np.array(bonds) + n)
+        if auto_construct is True:
+            if links == []:
+                slab.graph.add_edge(*np.array(bonds) + n)
+            else:
+                for k in links:
+                    slab.graph.add_edge(*np.array([bonds[0], k]) + n)
+                    slab.graph.add_edge(*np.array([bonds[1], k]) + n)
         for i, u in enumerate(U):
             for metal_index in self.index[u]:
                 slab.graph.add_edge(metal_index, bonds[i] + n)
