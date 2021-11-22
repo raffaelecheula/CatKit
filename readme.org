@@ -11,58 +11,20 @@
 
 Welcome to CatKit! A staging ground for computational tools which are generally useful for catalysis research. The goal of the project is to provide a communal location for those interested in hosting such tools under a common banner. In doing so, we hope to provide the infrastructure to produce more advanced functionality based on modular components of individual contributors.
 
-You can find our [[http://catkit.readthedocs.io/en/latest/?badge=latest][full documentation here]].
+This repository has been forked from https://github.com/SUNCAT-Center/CatKit
 
-* Installation
-** Pip installation
-CatKit is most easily installed with pip using:
-
-#+BEGIN_SRC sh
-pip install catkit
-#+END_SRC
-
-For Mac OSX, homebrew can be used in place of pip
-
-#+BEGIN_SRC sh
-brew install catkit
-#+END_SRC
-
-For usage on high-performance computers, installation will need to be performed locally which can be done using:
-
-#+BEGIN_SRC sh
-pip install --user catkit
-#+END_SRC
-
-These commands will install all of the necessary dependencies for you. 
+You can find the original [[http://catkit.readthedocs.io/en/latest/?badge=latest][full documentation here]].
 
 ** Source installation
-Alternatively, a version with the most recent commits can be install through git by running the following in your home directory.
 
+First, download the library.
 #+BEGIN_SRC sh
-git clone https://github.com/SUNCAT-Center/CatKit.git catkit
+git clone https://github.com/raffaelecheula/CatKit.git catkit
 #+END_SRC
 
-Then, add =~/catkit/bin= and =~/catkit= to your =PATH= and =PYTHONPATH= environment variables by adding the following line to your =~/.bashrc= file.
-
+Then, install the package.
 #+BEGIN_SRC sh
-export PYTHONPATH=~/catkit:$PYTHONPATH
-export PATH=~/catkit/bin:$PATH
-#+END_SRC
-
-And install the package:
-#+BEGIN_SRC sh
-cd catkit/
-python setup.py install
-#+END_SRC
-
-Or, one can use pip to install from the master branch directly:
-
-#+BEGIN_SRC sh
-pip install --upgrade git+https://github.com/SUNCAT-Center/CatKit.git catkit
-#+END_SRC
-
-#+BEGIN_SRC sh
-cd ~/cakit
+cd ./catkit
 pip install -e .
 #+END_SRC
 
