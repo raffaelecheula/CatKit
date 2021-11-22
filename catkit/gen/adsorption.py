@@ -263,6 +263,10 @@ class AdsorptionSites():
             Return only the unique symmetrically reduced sites.
         screen : bool
             Return only sites inside the unit cell.
+        site_name : str
+            Return only sites with given name.
+        topology_sym : bool
+            Calculate symmetry based on sites topology.
 
         Returns
         -------
@@ -423,11 +427,15 @@ class AdsorptionSites():
         Parameters
         ----------
         dist_range : list (2)
-            minimum and maximum distance between sites.
+            Minimum and maximum distance between sites.
         sites_names : list (n, 2)
             Define the site names allowed.
         symmetric : bool
             Return only the symmetrically reduced edges.
+        symmetric_ads : bool
+            Reduce the adsorption configurations if the adsorbate is symmetric.
+        topology_sym : bool
+            Calculate symmetry based on sites topology.
 
         Returns
         -------
@@ -577,8 +585,8 @@ class Builder(AdsorptionSites):
             index=0,
             auto_construct=True,
             linked_edges=False,
-            sites_names=None,
             dist_range=None,
+            sites_names=None,
             symmetric_ads=False,
             topology_sym=False,
             **kwargs):
@@ -597,6 +605,16 @@ class Builder(AdsorptionSites):
         auto_construct : bool
             Whether to automatically estimate the position of atoms in larger
             molecules or use the provided structure.
+        linked_edges : bool
+            Calculate edges only between directly connected sites.
+        dist_range : list (2)
+            Minimum and maximum distance between sites in bidentate adsorption.
+        sites_names : list (n, 2)
+            Define the site names allowed.
+        symmetric_ads : bool
+            Reduce the adsorption configurations if the adsorbate is symmetric.
+        topology_sym : bool
+            Calculate symmetry based on sites topology.
 
         Returns
         -------
