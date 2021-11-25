@@ -523,17 +523,20 @@ class AdsorptionSites():
                     edges_features += [edge_new]
 
         edges = np.array(edges)
+        edges_features = np.array(edges_features, dtype=object)
         if symmetric is True:
             edges = edges[uniques]
+            edges_features = edges_features[uniques]
 
         if site_must_contain:
-            symbols_list = []
-            for e in edges:
-                symbols_list += [[self.slab[int(self.index[t])].symbol
-                                  for t in topology[e[0]]+topology[e[1]]]]
-            edges = [e for i, e in enumerate(edges)
-                     if site_must_contain in symbols_list[i]]
-
+            symbols_list = [[self.slab[int(self.index[t])].symbol
+                                for t in topology[e[0]]+topology[e[1]]]
+                            for e in edges]
+            indices = [site_must_contain in symbols
+                       for symbols in symbols_list]
+            edges = edges[indices]
+            edges_features = edges_features[indices]
+        
         self.edges = edges
         self.edges_features = edges_features
 
@@ -777,6 +780,10 @@ class Builder(AdsorptionSites):
         for metal_index in self.index[u]:
             slab.graph.add_edge(metal_index, bond + n)
 
+        site_tag = self.get_site_tag(int(ind))
+        
+        slab.site_tag = site_tag
+
         return slab
 
     def _double_adsorption(self, adsorbate, bonds=None,
@@ -895,15 +902,12 @@ class Builder(AdsorptionSites):
         edge_features = self.edges_features[edge_index]
         site_tag = '-'.join([self.get_site_tag(int(e))
                              for e in edge_features[:2]])
-        
         site_tag += f'_d1:{edge_features[2]:.3f}'
         site_tag += '_d2:{'
         site_tag += ','.join([f'{self.symbols[j[0]]}:{j[1]:.3f}'
                               for j in edge_features[3]])
         site_tag += '}'
         
-        print(site_tag)
-
         slab.site_tag = site_tag
 
         return slab
