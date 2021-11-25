@@ -645,11 +645,11 @@ class Builder(AdsorptionSites):
             raise ValueError('Specify the index of atom to bond.')
 
         elif len(bonds) == 1:
+            sites = self.get_symmetric_sites(site_names=sites_names,
+                                             topology_sym=topology_sym)
             if index == -1:
                 slab = []
-                for i, _ in enumerate(
-                        self.get_symmetric_sites(site_names=sites_names,
-                                                 topology_sym=topology_sym)):
+                for i, _ in enumerate(sites):
                     slab += [self._single_adsorption(
                         adsorbate,
                         bond=bonds[0],
@@ -683,11 +683,6 @@ class Builder(AdsorptionSites):
             if linked_edges is True:
                 edges = self.get_adsorption_edges()
             else:
-                if dist_range is None:
-                    dist = np.linalg.norm(
-                        adsorbate[bonds[0]].position-
-                        adsorbate[bonds[1]].position)
-                    dist_range = [0., dist*2.]
                 edges = self.get_adsorption_edges_all(
                     sites_names=sites_names,
                     dist_range=dist_range,
@@ -742,20 +737,18 @@ class Builder(AdsorptionSites):
         atoms.set_cell(slab.cell)
 
         if symmetric:
-            ind = self.get_symmetric_sites(
-                site_names=site_names,
-                topology_sym=topology_sym,
-                )[site_index]
-            vector = self.get_adsorption_vectors(
-                site_names=site_names,
-                topology_sym=topology_sym,
-                )[site_index]
+            sites = self.get_symmetric_sites(site_names=site_names,
+                                             topology_sym=topology_sym)
+            vectors = self.get_adsorption_vectors(site_names=site_names,
+                                                  topology_sym=topology_sym)
         else:
-            ind = self.get_periodic_sites()[site_index]
-            vector = self.get_adsorption_vectors(unique=False)[site_index]
+            sites = self.get_periodic_sites()
+            vectors = self.get_adsorption_vectors(unique=False)
+        site = sites[site_index]
+        vector = vectors[site_index]
 
         # Improved position estimate for site.
-        u = self.r1_topology[ind]
+        u = self.r1_topology[site]
         r = radii[slab[self.index[u]].numbers]
         top_sites = self.coordinates[self.connectivity == 1]
 
@@ -780,7 +773,14 @@ class Builder(AdsorptionSites):
         for metal_index in self.index[u]:
             slab.graph.add_edge(metal_index, bond + n)
 
-        slab.adsorption_tag = self.get_adsorption_tag(int(ind))
+        #slab.adsorption_tag = self.get_adsorption_tag(int(site))
+
+        tags = [self.get_adsorption_tag(int(s)) for s in sites]
+        
+        number = len([tag for tag in tags[:site_index]
+                      if tag == tags[site_index]])
+        
+        slab.adsorption_tag = f'{tags[site_index]}_{number:02d}'
 
         return slab
 
@@ -897,14 +897,25 @@ class Builder(AdsorptionSites):
                 slab.graph.add_edge(metal_index, bonds[i] + n)
 
         # get adsorption tag
-        edge_features = self.edges_features[edge_index]
-        tags = '-'.join([self.get_adsorption_tag(int(e))
-                         for e in edge_features[:2]])
-        d1 = f'd1:{edge_features[2]:.3f}'
-        d2 = 'd2:{'+','.join([f'{self.symbols[j[0]]}:{j[1]:.3f}'
-                              for j in edge_features[3]])+'}'
+        tags = ['-'.join([self.get_adsorption_tag(int(e)) for e in edges[i]])
+                for i in range(len(edges))]
         
-        slab.adsorption_tag = '_'.join([tags, d1, d2])
+        number = len([tag for tag in tags[:edge_index]
+                      if tag == tags[edge_index]])
+        
+        slab.adsorption_tag = f'{tags[edge_index]}_{number:02d}'
+        
+        #slab.adsorption_tag = '-'.join([self.get_adsorption_tag(int(e))
+        #                                for e in edges[edge_index]])
+        
+        #edge_features = self.edges_features[edge_index]
+        #tags = '-'.join([self.get_adsorption_tag(int(e))
+        #                 for e in edge_features[:2]])
+        #d1 = f'd1:{edge_features[2]:.3f}'
+        #d2 = 'd2:{'+','.join([f'{self.symbols[j[0]]}:{j[1]:.3f}'
+        #                      for j in edge_features[3]])+'}'
+        #
+        #slab.adsorption_tag = '_'.join([tags, d1, d2])
 
         return slab
 
