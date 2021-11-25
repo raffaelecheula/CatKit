@@ -897,8 +897,11 @@ class Builder(AdsorptionSites):
                 slab.graph.add_edge(metal_index, bonds[i] + n)
 
         # get adsorption tag
-        tags = ['-'.join([self.get_adsorption_tag(int(e)) for e in edges[i]])
+        tags = ['-'.join([self.get_adsorption_tag(int(e)) 
+                          for e in self.edges_features[i][:2]])
                 for i in range(len(edges))]
+        #tags = ['-'.join([self.get_adsorption_tag(int(e)) for e in edges[i]])
+        #        for i in range(len(edges))]
         
         number = len([tag for tag in tags[:edge_index]
                       if tag == tags[edge_index]])
