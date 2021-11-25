@@ -780,9 +780,7 @@ class Builder(AdsorptionSites):
         for metal_index in self.index[u]:
             slab.graph.add_edge(metal_index, bond + n)
 
-        site_tag = self.get_site_tag(int(ind))
-        
-        slab.site_tag = site_tag
+        slab.adsorption_tag = self.get_adsorption_tag(int(ind))
 
         return slab
 
@@ -898,17 +896,15 @@ class Builder(AdsorptionSites):
             for metal_index in self.index[u]:
                 slab.graph.add_edge(metal_index, bonds[i] + n)
 
-        # get site tag
+        # get adsorption tag
         edge_features = self.edges_features[edge_index]
-        site_tag = '-'.join([self.get_site_tag(int(e))
-                             for e in edge_features[:2]])
-        site_tag += f'_d1:{edge_features[2]:.3f}'
-        site_tag += '_d2:{'
-        site_tag += ','.join([f'{self.symbols[j[0]]}:{j[1]:.3f}'
-                              for j in edge_features[3]])
-        site_tag += '}'
+        tags = '-'.join([self.get_adsorption_tag(int(e))
+                         for e in edge_features[:2]])
+        d1 = f'd1:{edge_features[2]:.3f}'
+        d2 = 'd2:{'+','.join([f'{self.symbols[j[0]]}:{j[1]:.3f}'
+                              for j in edge_features[3]])+'}'
         
-        slab.site_tag = site_tag
+        slab.adsorption_tag = '_'.join([tags, d1, d2])
 
         return slab
 
@@ -945,14 +941,13 @@ class Builder(AdsorptionSites):
         else:
             raise ValueError('Too many bonded atoms to position correctly.')
 
-    def get_site_tag(self, index):
+    def get_adsorption_tag(self, index):
         
         if self.ncoord_top is None:
             self.get_coordination_numbers()
         
-        site_tag = self.names[index]+'{'
-        site_tag += ','.join([f'{self.symbols[i]}:{self.ncoord_top[i]}'
-                              for i in self.r1_topology[index]])
-        site_tag += '}'
+        adsorption_tag = (self.names[index]+'{'+
+                          ','.join([f'{self.symbols[i]}:{self.ncoord_top[i]}'
+                                    for i in self.r1_topology[index]])+'}')
 
-        return site_tag
+        return adsorption_tag
