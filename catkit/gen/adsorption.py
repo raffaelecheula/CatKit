@@ -8,7 +8,6 @@ import networkx as nx
 import numpy as np
 import scipy
 from ase.build.tools import rotation_matrix
-from ase.neighborlist import neighbor_list, natural_cutoffs
 
 radii = defaults.get('radii')
 
@@ -37,7 +36,7 @@ class AdsorptionSites():
         if surface_atoms is None:
             raise ValueError('Slab must contain surface atoms')
         
-        index_all, coords_all, _ = utils.expand_cell(slab, cutoff=cutoff)
+        index_all, coords_all = utils.expand_cell(slab, cutoff=cutoff)[:2]
         index_top = np.where(np.in1d(index_all, surface_atoms))[0]
         self.repetitions = int(len(index_all)/len(slab))
 
@@ -80,24 +79,13 @@ class AdsorptionSites():
         self._symmetric_sites = None
         self.ncoord_top = None
 
-    def get_coordination_numbers(self, cutoff='natural'):
+    def get_coordination_numbers(self):
         
-        if cutoff == 'natural':
-            cutoff = natural_cutoffs(atoms=self.slab, mult=1.2)
-        
-        nlist = neighbor_list(quantities='i', a=self.slab, cutoff=cutoff)
-        ncoord = np.bincount(nlist).tolist()
+        ncoord = [sum(c) for c in self.slab.connectivity]
         ncoord *= self.repetitions
         ncoord_top = np.array(ncoord)[self.index]
         
         self.ncoord_top = ncoord_top
-        
-        #from ase.neighborlist import build_neighbor_list
-        #
-        #nlist = build_neighbor_list(atoms=self.slab, cutoffs=cutoff,
-        #                            self_interaction=False, bothways=True)
-        #for i in range(len(self.slab)):
-        #    print(len(nlist.get_neighbors(i)[0]))
         
         return ncoord_top
 
@@ -286,7 +274,7 @@ class AdsorptionSites():
         return periodic_match
 
     def get_symmetric_sites(self, unique=True, screen=True, site_names=None,
-                            topology_sym=False):
+                            topology_sym=False, site_contains=None):
         """Determine the symmetrically unique adsorption sites
         from a list of fractional coordinates.
 
@@ -325,11 +313,17 @@ class AdsorptionSites():
             for i, j in enumerate(symmetric_sites):
                 if i != j:
                     continue
-
                 d = operations[i, :, None] - points
                 d -= np.round(d)
                 dind = np.where((np.abs(d) < self.tol).all(axis=2))[-1]
                 symmetric_sites[np.unique(dind)] = true_index[i]
+
+            centre = np.array([0.49, 0.48])
+            for i, j in enumerate(symmetric_sites):
+                if (np.linalg.norm(points[i][:2]-centre) <
+                    np.linalg.norm(points[j][:2]-centre)):
+                    index = np.where(symmetric_sites == j)
+                    symmetric_sites[index] = i
 
             self._symmetric_sites = symmetric_sites
 
@@ -337,25 +331,40 @@ class AdsorptionSites():
             periodic = self.get_periodic_sites(screen=True)
             symmetric_sites = symmetric_sites[periodic]
         
+        if unique:
+            symmetric_sites = np.unique(symmetric_sites)
+
+        if site_contains is not None:
+            indices = [False]*len(symmetric_sites)
+            topologies = []
+            for i, s in enumerate(symmetric_sites):
+                for t in self.r1_topology[s]:
+                    if site_contains == self.slab[int(self.index[t])].symbol:
+                        indices[i] = True
+                        topologies += [self.r1_topology[s]]
+            
+            for i, s in enumerate(symmetric_sites):
+                for topol in topologies:
+                    if all(t in topol for t in self.r1_topology[s]):
+                        indices[i] = True
+            
+            symmetric_sites = symmetric_sites[indices]
+
         if site_names:
             symmetric_sites = np.array([s for s in symmetric_sites 
                                         if self.names[s] in site_names])
 
-        if unique:
-            symmetric_sites = np.unique(symmetric_sites)
-
         if topology_sym:
-            topology_vect = np.array([
-                str(sorted(self._symmetric_sites[t]
-                           for t in self.r1_topology[s]))
-                for s in symmetric_sites], dtype=object)
+            topology_vect = np.array([str(sorted(self._symmetric_sites[t]
+                                                 for t in self.r1_topology[s]))
+                                      for s in symmetric_sites], dtype=object)
             _, indices = np.unique(topology_vect, return_index=True)
             symmetric_sites = symmetric_sites[indices]
 
         return symmetric_sites
 
     def get_adsorption_vectors(self, unique=True, screen=True, site_names=None,
-                               topology_sym=False):
+                               topology_sym=False, site_contains=None):
         """Returns the vectors representing the furthest distance from
         the neighboring atoms.
 
@@ -368,7 +377,8 @@ class AdsorptionSites():
         if unique:
             sel = self.get_symmetric_sites(screen=screen,
                                            site_names=site_names,
-                                           topology_sym=topology_sym)
+                                           topology_sym=topology_sym,
+                                           site_contains=site_contains)
         else:
             sel = self.get_periodic_sites(screen=screen)
         coords = self.coordinates[sel]
@@ -454,7 +464,7 @@ class AdsorptionSites():
 
     def get_adsorption_edges_all(self, dist_range=[0., 5.], sites_names=None,
                                  symmetric=True, symmetric_ads=False,
-                                 topology_sym=False, site_must_contain=None):
+                                 topology_sym=False, site_contains=None):
         """Get bidentate adsorption sites, also the ones that are not
         directly connected.
         
@@ -492,7 +502,9 @@ class AdsorptionSites():
             norm = np.linalg.norm(diff, axis=2)
             neighbors = np.where((norm > dist_range[0]) &
                                  (norm < dist_range[1]))[0]
-            for n in neighbors:
+            centre = np.sum(self.slab.cell[:2]/2., axis=0)[:2]-1e-3
+            for n in sorted(neighbors,
+                            key=lambda n: np.linalg.norm(coords[n]-centre)):
                 if (not sites_names 
                     or [self.names[s], self.names[n]] in sites_names):
                     edge_new = [sym_all[s], sym_all[n],
@@ -524,16 +536,28 @@ class AdsorptionSites():
 
         edges = np.array(edges)
         edges_features = np.array(edges_features, dtype=object)
+        
         if symmetric is True:
             edges = edges[uniques]
             edges_features = edges_features[uniques]
 
-        if site_must_contain:
-            symbols_list = [[self.slab[int(self.index[t])].symbol
-                                for t in topology[e[0]]+topology[e[1]]]
-                            for e in edges]
-            indices = [site_must_contain in symbols
-                       for symbols in symbols_list]
+        if site_contains:
+            indices = [False]*len(edges)
+            topologies = []
+            for i, e in enumerate(edges):
+                for t in topology[e[0]]+topology[e[1]]:
+                    if site_contains == self.slab[int(self.index[t])].symbol:
+                        indices[i] = True
+                        topologies += [topology[e[0]]+topology[e[1]]]
+            for i, e in enumerate(edges):
+                for topol in topologies:
+                    if all(t in topol for t in topology[e[0]]+topology[e[1]]):
+                        indices[i] = True
+            #symbols_list = [[self.slab[int(self.index[t])].symbol
+            #                    for t in topology[e[0]]+topology[e[1]]]
+            #                for e in edges]
+            #indices = [site_contains in symbols
+            #           for symbols in symbols_list]
             edges = edges[indices]
             edges_features = edges_features[indices]
         
@@ -604,9 +628,9 @@ class Builder(AdsorptionSites):
             sites_names=None,
             symmetric_ads=False,
             topology_sym=False,
-            site_must_contain=None,
+            site_contains=None,
             **kwargs):
-        """Add and adsorbate to a slab. If the auto_constructor flag is False,
+        """Add an adsorbate to a slab. If the auto_constructor flag is False,
         the atoms object provided will be attached at the active site.
 
         Parameters
@@ -646,38 +670,42 @@ class Builder(AdsorptionSites):
 
         elif len(bonds) == 1:
             sites = self.get_symmetric_sites(site_names=sites_names,
-                                             topology_sym=topology_sym)
+                                             topology_sym=topology_sym,
+                                             site_contains=site_contains)
             if index == -1:
-                slab = []
+                slabs = []
                 for i, _ in enumerate(sites):
-                    slab += [self._single_adsorption(
+                    slabs += [self._single_adsorption(
                         adsorbate,
                         bond=bonds[0],
                         site_index=i,
                         site_names=sites_names,
                         topology_sym=topology_sym,
                         auto_construct=auto_construct,
+                        site_contains=site_contains,
                         **kwargs)]
             elif isinstance(index, (list, np.ndarray)):
-                slab = []
+                slabs = []
                 for i in index:
-                    slab += [self._single_adsorption(
+                    slabs += [self._single_adsorption(
                         adsorbate,
                         bond=bonds[0],
                         site_index=i,
                         site_names=sites_names,
                         topology_sym=topology_sym,
                         auto_construct=auto_construct,
+                        site_contains=site_contains,
                         **kwargs)]
             else:
-                slab = self._single_adsorption(
+                slabs = [self._single_adsorption(
                     adsorbate,
                     bond=bonds[0],
                     site_index=index,
                     site_names=sites_names,
                     topology_sym=topology_sym,
                     auto_construct=auto_construct,
-                    **kwargs)
+                    site_contains=site_contains,
+                    **kwargs)]
 
         elif len(bonds) == 2:
             if linked_edges is True:
@@ -688,37 +716,37 @@ class Builder(AdsorptionSites):
                     dist_range=dist_range,
                     symmetric_ads=symmetric_ads,
                     topology_sym=topology_sym,
-                    site_must_contain=site_must_contain)
+                    site_contains=site_contains)
             if index == -1:
-                slab = []
+                slabs = []
                 for i, _ in enumerate(edges):
-                    slab += [self._double_adsorption(
+                    slabs += [self._double_adsorption(
                         adsorbate,
                         bonds=bonds,
                         edge_index=i,
                         auto_construct=auto_construct,
                         **kwargs)]
             elif isinstance(index, (list, np.ndarray)):
-                slab = []
+                slabs = []
                 for i in index:
-                    slab += [self._double_adsorption(
+                    slabs += [self._double_adsorption(
                         adsorbate,
                         bonds=bonds,
                         edge_index=i,
                         auto_construct=auto_construct,
                         **kwargs)]
             else:
-                slab = self._double_adsorption(
+                slabs = [self._double_adsorption(
                     adsorbate,
                     bonds=bonds,
                     edge_index=index,
                     auto_construct=auto_construct,
-                    **kwargs)
+                    **kwargs)]
 
         else:
             raise ValueError('Only mono- and bidentate adsorption supported.')
 
-        return slab
+        return slabs
 
     def _single_adsorption(
             self,
@@ -729,6 +757,7 @@ class Builder(AdsorptionSites):
             site_names=None,
             topology_sym=False,
             auto_construct=True,
+            site_contains=None,
             symmetric=True):
         """Bond and adsorbate by a single atom."""
         if slab is None:
@@ -738,9 +767,11 @@ class Builder(AdsorptionSites):
 
         if symmetric:
             sites = self.get_symmetric_sites(site_names=site_names,
-                                             topology_sym=topology_sym)
+                                             topology_sym=topology_sym,
+                                             site_contains=site_contains)
             vectors = self.get_adsorption_vectors(site_names=site_names,
-                                                  topology_sym=topology_sym)
+                                                  topology_sym=topology_sym,
+                                                  site_contains=site_contains)
         else:
             sites = self.get_periodic_sites()
             vectors = self.get_adsorption_vectors(unique=False)
@@ -773,14 +804,11 @@ class Builder(AdsorptionSites):
         for metal_index in self.index[u]:
             slab.graph.add_edge(metal_index, bond + n)
 
-        #slab.adsorption_tag = self.get_adsorption_tag(int(site))
-
-        tags = [self.get_adsorption_tag(int(s)) for s in sites]
-        
+        # Get adsorption site tag
+        tags = [self.get_site_tag(int(s)) for s in sites]
         number = len([tag for tag in tags[:site_index]
                       if tag == tags[site_index]])
-        
-        slab.adsorption_tag = f'{tags[site_index]}_{number:02d}'
+        slab.site_tag = f'{tags[site_index]}-{number:02d}'
 
         return slab
 
@@ -806,10 +834,12 @@ class Builder(AdsorptionSites):
         vec = coords[1] - coords[0]
         n = np.linalg.norm(vec)
         uvec0 = vec / n
-        d = np.sum(radii[numbers]) * 0.95
-        if bonds not in graph.edges:
-            d = np.linalg.norm((atoms[bonds[0]].position
-                               -atoms[bonds[1]].position))
+        #d = np.sum(radii[numbers]) * 0.95
+        #if bonds not in graph.edges:
+        #    d = np.linalg.norm((atoms[bonds[0]].position
+        #                       -atoms[bonds[1]].position))
+        d = np.linalg.norm((atoms[bonds[0]].position
+                            -atoms[bonds[1]].position))
         dn = (d - n) / 2
 
         base_position0 = coords[0] - uvec0 * dn
@@ -896,29 +926,14 @@ class Builder(AdsorptionSites):
             for metal_index in self.index[u]:
                 slab.graph.add_edge(metal_index, bonds[i] + n)
 
-        # get adsorption tag
-        tags = ['-'.join([self.get_adsorption_tag(int(e)) 
-                          for e in self.edges_features[i][:2]])
+        # Get adsorption site tag
+        tags = ['-'.join([self.get_site_tag(int(e)) for e in edges[i]])
                 for i in range(len(edges))]
-        #tags = ['-'.join([self.get_adsorption_tag(int(e)) for e in edges[i]])
-        #        for i in range(len(edges))]
         
         number = len([tag for tag in tags[:edge_index]
                       if tag == tags[edge_index]])
         
-        slab.adsorption_tag = f'{tags[edge_index]}_{number:02d}'
-        
-        #slab.adsorption_tag = '-'.join([self.get_adsorption_tag(int(e))
-        #                                for e in edges[edge_index]])
-        
-        #edge_features = self.edges_features[edge_index]
-        #tags = '-'.join([self.get_adsorption_tag(int(e))
-        #                 for e in edge_features[:2]])
-        #d1 = f'd1:{edge_features[2]:.3f}'
-        #d2 = 'd2:{'+','.join([f'{self.symbols[j[0]]}:{j[1]:.3f}'
-        #                      for j in edge_features[3]])+'}'
-        #
-        #slab.adsorption_tag = '_'.join([tags, d1, d2])
+        slab.site_tag = f'{tags[edge_index]}-{number:02d}'
 
         return slab
 
@@ -955,13 +970,13 @@ class Builder(AdsorptionSites):
         else:
             raise ValueError('Too many bonded atoms to position correctly.')
 
-    def get_adsorption_tag(self, index):
+    def get_site_tag(self, index):
         
         if self.ncoord_top is None:
             self.get_coordination_numbers()
         
-        adsorption_tag = (self.names[index]+'{'+
-                          ','.join([f'{self.symbols[i]}:{self.ncoord_top[i]}'
-                                    for i in self.r1_topology[index]])+'}')
+        site_tag = (self.names[index]+'['+
+                    ','.join([f'{self.symbols[i]}.{self.ncoord_top[i]}'
+                              for i in self.r1_topology[index]])+']')
 
-        return adsorption_tag
+        return site_tag
