@@ -41,7 +41,7 @@ def surface(
         miller=(1, 1, 1),
         termination=0,
         fixed=0,
-        vacuum=10,
+        vacuum=5.,
         orthogonal=False,
         **kwargs):
     """A helper function to return the surface associated with a
@@ -109,7 +109,7 @@ def surface(
     return slab
 
 
-def molecule(species, bond_index=None, vacuum=0):
+def molecule(species, bond_index=None, vacuum=5.):
     """Return list of enumerated gas-phase molecule structures based
     on species and topology.
 
