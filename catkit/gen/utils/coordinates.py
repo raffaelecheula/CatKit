@@ -110,9 +110,10 @@ def trilaterate(centers, r, zvector=None):
     if len(r) == 2:
         x0 = (d**2 - r[0]**2 + r[1]**2)
         x = d - x0 / (2 * d)
-        a = np.sqrt(4 * d**2 * r[1]**2 - x0**2)
-        z = 0.5 * (1 / d) * a
-        if np.isnan(z):
+        if 4 * d**2 * r[1]**2 - x0**2 > 0.:
+            a = np.sqrt(4 * d**2 * r[1]**2 - x0**2)
+            z = 0.5 * (1 / d) * a
+        else:
             z = 0.01
         h = z * zvector
         intersection = centers[0] + uvec1 * x + h
@@ -128,8 +129,9 @@ def trilaterate(centers, r, zvector=None):
 
         x = (r[0]**2 - r[1]**2 + d**2) / (2 * d)
         y = (r[0]**2 - r[2]**2 - 2 * i * x + i**2 + j**2) / (2 * j)
-        z = np.sqrt(r[0]**2 - x**2 - y**2)
-        if np.isnan(z):
+        if r[0]**2 - x**2 - y**2 > 0.:
+            z = np.sqrt(r[0]**2 - x**2 - y**2)
+        else:
             z = 0.01
         intersection = centers[0] + x * uvec1 + y * uvec2 + z * uvec3
 

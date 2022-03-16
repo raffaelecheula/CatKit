@@ -11,7 +11,6 @@ from ase.build.tools import rotation_matrix
 
 radii = defaults.get('radii')
 
-
 class AdsorptionSites():
     """Adsorption site object."""
 
@@ -67,6 +66,7 @@ class AdsorptionSites():
         self.frac_coords = np.dot(self.coordinates, np.linalg.pinv(slab.cell))
         self.names = np.array(self.names, dtype=object)
         self.ncoord_surf = self.get_coordination_numbers()
+        self.sites = np.arange(len(self.coordinates))
         self.n_sites = len(self.coordinates)
         
         self.centre = (np.sum(self.slab[surface_atoms].positions, axis=0) /
@@ -136,9 +136,6 @@ class AdsorptionSites():
         """Find all bridge and hollow sites (3-fold and 4-fold) given an
         input slab based Delaunay triangulation of surface atoms of a
         super-cell.
-
-        TODO: Determine if this can be made more efficient by
-        removing the 'sites' dictionary.
 
         Parameters
         ----------
@@ -286,8 +283,8 @@ class AdsorptionSites():
                             unique=True,
                             screen=True,
                             sites_names=None,
-                            topology_sym=False,
                             site_contains=None,
+                            topology_sym=False,
                             centre_in_cell=True):
         """Determine the symmetrically unique adsorption sites
         from a list of fractional coordinates.
@@ -317,7 +314,7 @@ class AdsorptionSites():
 
             affine = np.append(rotations, translations[:, None], axis=1)
             points = self.frac_coords
-            true_index = self.get_periodic_sites(screen=False)
+            index = self.get_periodic_sites(screen=False)
 
             affine_points = np.insert(points, 3, 1, axis=1)
             operations = np.dot(affine_points, affine)
@@ -329,7 +326,7 @@ class AdsorptionSites():
                 d = operations[i, :, None] - points
                 d -= np.round(d)
                 dind = np.where((np.abs(d) < self.tol).all(axis=2))[-1]
-                symmetric_sites[np.unique(dind)] = true_index[i]
+                symmetric_sites[np.unique(dind)] = index[i]
 
             if centre_in_cell is True:
                 coords = self.coordinates
@@ -343,21 +340,24 @@ class AdsorptionSites():
             self._symmetric_sites = symmetric_sites
 
         if not topology_sym:
-            symmetric_sites = self._symmetric_sites
-            if screen:
-                periodic_sites = self.get_periodic_sites(screen=screen)
-                symmetric_sites = symmetric_sites[periodic_sites]
+            symmetric_sites = self._symmetric_sites.copy()
         
         else:
-            symmetric_sites = self.get_periodic_sites(screen=screen)
+            symmetric_sites = self.sites.copy()
             if centre_in_cell is True:
                 coords = self.coordinates
                 symmetric_sites = np.array(sorted(symmetric_sites, 
                     key=lambda n: np.linalg.norm(coords[n][:2]-self.centre)))
             site_tags = [self.get_site_tag(index=index) 
                          for index in symmetric_sites]
-            _, indices = np.unique(site_tags, return_index=True)
-            symmetric_sites = symmetric_sites[indices]
+            tags_unique, indices = np.unique(site_tags, return_index=True)
+            tags_dict = dict(zip(tags_unique, indices))
+            for i, t in enumerate(site_tags):
+                index_sym = tags_dict[t]
+                symmetric_sites[i] = symmetric_sites[index_sym]
+        
+        periodic_sites = self.get_periodic_sites(screen=screen)
+        symmetric_sites = symmetric_sites[periodic_sites]
         
         if unique:
             symmetric_sites = np.unique(symmetric_sites)
@@ -400,11 +400,20 @@ class AdsorptionSites():
         return vectors
     
     def get_adsorption_edges_linked(self,
+                                    sites_names=None,
+                                    site_contains=None,
+                                    symmetric_ads=False,
+                                    topology_sym=False,
+                                    sites_one=None,
+                                    sites_two=None,
                                     unique=True,
                                     screen=True,
-                                    site_contains=None):
+                                    centre_in_cell=True):
         """Return the edges of adsorption sites defined as all regions
         with adjacent vertices.
+
+        TODO: sites_names, symmetric_ads, sites_one, sites_two,
+        centre_in_cell
 
         Parameters
         ----------
@@ -433,7 +442,8 @@ class AdsorptionSites():
         mask = np.arange(dmax) < np.array(lens)[:, None]
         regions[mask] = np.concatenate(select)
 
-        site_id = self.get_symmetric_sites(unique=False, screen=False)
+        site_id = self.get_symmetric_sites(
+            unique=False, screen=False, topology_sym=topology_sym)
         site_id = site_id + self.connections / 10.
         
         per = self.get_periodic_sites(screen=False)
@@ -479,11 +489,14 @@ class AdsorptionSites():
     def get_adsorption_edges_not_linked(self,
                                         range_edges=[0.1, 3.0],
                                         sites_names=None,
-                                        unique=True,
-                                        symmetric_ads=False,
                                         site_contains=None,
-                                        centre_in_cell=True,
-                                        **kwargs):
+                                        symmetric_ads=False,
+                                        topology_sym=False,
+                                        sites_one=None,
+                                        sites_two=None,
+                                        screen=True,
+                                        unique=True,
+                                        centre_in_cell=True):
         """Get bidentate adsorption sites, also the ones that are not
         directly connected.
         
@@ -505,44 +518,60 @@ class AdsorptionSites():
             unit slab.
         """
 
-        sites_unique = self.get_symmetric_sites(**kwargs)
+        if sites_one is None:
+            if unique is True:
+                sites_one = self.get_symmetric_sites(topology_sym=topology_sym)
+            elif screen is True:
+                sites_one = self.get_periodic_sites()
+            else:
+                sites_one = self.sites
+        
         sites_all = self.get_symmetric_sites(
-            unique=False, screen=False, **kwargs)
+            unique=False, screen=False, topology_sym=topology_sym)
+        
         coords = self.coordinates[:, :2]
-        r1_topology = self.r1_topology
+        r1top = self.r1_topology
         
         edges = []
         edges_sym = []
         uniques = []
-        for s in sites_unique:
+        for s in sites_one:
             diff = coords[:, None]-coords[s]
             norm = np.linalg.norm(diff, axis=2)
             neighbors = np.where((norm > range_edges[0]) &
                                  (norm < range_edges[1]))[0]
+            if sites_two is not None:
+                neighbors = np.intersect1d(neighbors, sites_two)
             neighbors_all = np.where((norm < range_edges[1]))[0]
             if centre_in_cell is True:
                 neighbors = sorted(neighbors,
-                     key=lambda n: np.linalg.norm(coords[n]-self.centre))
+                    key=lambda n: np.linalg.norm(coords[n]-self.centre))
             for n in neighbors:
                 if sites_names:
-                    names = [names for names in sites_names
-                             if [self.names[s], self.names[n]] == names[:2]]
-                    if len(names) == 0:
+                    names_list = [self.names[s], self.names[n]]
+                    if isinstance(sites_names[0], dict):
+                        names_matched = [names for names in sites_names
+                                         if names_list == names['bonds']]
+                        names_over = [name['over'] for name in names_matched]
+                    else:
+                        names_matched = [names for names in sites_names
+                                         if names_list == names]
+                    if len(names_matched) == 0:
                         continue
-                    if len(sites_names) > 2:
+                    if (isinstance(sites_names[0], dict) 
+                        and None not in names_over):
                         conn = [m for m in neighbors_all if m != n
-                                if self.names[m] in names[0][2]
+                                if self.names[m] in names_over
                                 if np.linalg.norm(coords[m]-coords[s])
                                    + np.linalg.norm(coords[m]-coords[n])
                                    - np.linalg.norm(coords[s]-coords[n])
                                    < self.tol*1e2]
                         if len(conn) == 0:
                             continue
-                
                 edge_new = [sites_all[s], sites_all[n],
                             np.round(norm[n,0], decimals=3)]
                 dist_top = []
-                for t in r1_topology[s]:
+                for t in r1top[s]:
                     norm_i = np.linalg.norm(coords[n]-coords[t])
                     dist_top += [(sites_all[t], 
                                   np.round(norm_i, decimals=3))]
@@ -551,7 +580,7 @@ class AdsorptionSites():
                     edge_rev = [sites_all[n], sites_all[s],
                                 np.round(norm[n,0], decimals=3)]
                     dist_top = []
-                    for t in r1_topology[n]:
+                    for t in r1top[n]:
                         norm_i = np.linalg.norm(coords[s]-coords[t])
                         dist_top += [(sites_all[t],
                                       np.round(norm_i, decimals=3))]
@@ -581,6 +610,8 @@ class AdsorptionSites():
         """Get the indices of the sites or edges that contain at least one
         atom with the element or the coordination number specified.
         """
+        if not isinstance(site_contains, (list, np.ndarray)):
+            site_contains = [site_contains]
         
         mask = [False]*len(sites)
         for i, site in enumerate(sites):
@@ -590,8 +621,10 @@ class AdsorptionSites():
                 topologies = self.r1_topology[site]
             for t in topologies:
                 symbol = self.slab[int(self.index_surf[t])].symbol
-                if site_contains in (symbol, self.ncoord_surf[t]):
-                    mask[i] = True
+                ncoord = self.ncoord_surf[t]
+                for c in site_contains:
+                    if c in (symbol, ncoord):
+                        mask[i] = True
 
         return mask
 
@@ -656,7 +689,10 @@ class Builder(AdsorptionSites):
                       symmetric_ads=False,
                       topology_sym=False,
                       site_contains=None,
-                      **kwargs):
+                      slab=None,
+                      sites=None,
+                      screen=True,
+                      unique=True):
         """Add an adsorbate to a slab.
 
         Parameters
@@ -697,10 +733,11 @@ class Builder(AdsorptionSites):
             raise ValueError('Specify the index of atoms to bond.')
 
         elif len(bonds) == 1:
-            sites = self.get_symmetric_sites(
-                sites_names=sites_names,
-                topology_sym=topology_sym,
-                site_contains=site_contains)
+            if sites is None:
+                sites = self.get_symmetric_sites(
+                    sites_names=sites_names,
+                    site_contains=site_contains,
+                    topology_sym=topology_sym)
             
             if index in (None, -1):
                 index = range(len(sites))
@@ -714,19 +751,26 @@ class Builder(AdsorptionSites):
                     sites=sites,
                     site_index=int(i),
                     auto_construct=auto_construct,
-                    **kwargs)]
+                    slab=slab)]
 
         elif len(bonds) == 2:
             if linked_edges is True:
                 edges = self.get_adsorption_edges_linked(
-                    site_contains=site_contains)
-            else:
-                edges = self.get_adsorption_edges_not_linked(
                     sites_names=sites_names,
-                    range_edges=range_edges,
+                    site_contains=site_contains,
                     symmetric_ads=symmetric_ads,
                     topology_sym=topology_sym,
-                    site_contains=site_contains)
+                    sites_one=sites,
+                    sites_two=sites)
+            else:
+                edges = self.get_adsorption_edges_not_linked(
+                    range_edges=range_edges,
+                    sites_names=sites_names,
+                    site_contains=site_contains,
+                    symmetric_ads=symmetric_ads,
+                    topology_sym=topology_sym,
+                    sites_one=sites,
+                    sites_two=sites)
             
             if index in (None, -1):
                 index = range(len(edges))
@@ -736,11 +780,11 @@ class Builder(AdsorptionSites):
             for i in index:
                 slabs += [self._double_adsorption(
                     adsorbate=adsorbate,
-                    edges=edges,
                     bonds=bonds,
+                    edges=edges,
                     edge_index=i,
                     auto_construct=auto_construct,
-                    **kwargs)]
+                    slab=slab)]
 
         else:
             raise ValueError('Only mono- and bidentate adsorption supported.')
@@ -757,7 +801,7 @@ class Builder(AdsorptionSites):
                              sites_names=None,
                              site_contains=None,
                              intersection=True,
-                             **kwargs):
+                             topology_sym=False):
         """Add an adsorbate to a slab at a desired distance ranges from the
         positions of centres.
         """
@@ -784,7 +828,7 @@ class Builder(AdsorptionSites):
                                (norm < ranges_coads[i][1]))[0]).tolist()
         if intersection is True:
             sites = [i for i in sites if sites.count(i) == len(centres)]
-        sites = np.unique(sites).tolist()
+        sites = np.unique(sites)
         
         if site_contains is not None:
             mask = self._mask_site_contains(site_contains=site_contains,
@@ -796,17 +840,14 @@ class Builder(AdsorptionSites):
             sites = sites[mask]
         
         slabs = []
-        vectors = self.get_adsorption_vectors(sites=sites)
         for i, _ in enumerate(sites):
             slabs += [self._single_adsorption(
                 adsorbate,
                 bonds[0],
                 sites=sites,
-                vectors=vectors,
                 slab=slab.copy(),
                 site_index=i,
-                auto_construct=auto_construct,
-                **kwargs)]
+                auto_construct=auto_construct)]
         
         return slabs
         
@@ -818,8 +859,7 @@ class Builder(AdsorptionSites):
                      auto_construct=True,
                      ranges_coads=None,
                      sites_names=None,
-                     site_contains=None,
-                     **kwargs):
+                     site_contains=None):
         """Add an adsorbate to a slab at a desired distance range from the
         position of centre.
         """
@@ -829,7 +869,7 @@ class Builder(AdsorptionSites):
         for slab in slabs_with_ads:
         
             if centres is None:
-                centres = self._get_adsorbates_centres(slab=slab)
+                centres = self.get_adsorbates_centres(slab=slab)
 
             slabs += self.add_adsorbate_ranges(
                 adsorbate=adsorbate,
@@ -839,47 +879,64 @@ class Builder(AdsorptionSites):
                 auto_construct=auto_construct,
                 ranges_coads=ranges_coads,
                 sites_names=sites_names,
-                site_contains=site_contains,
-                **kwargs)
+                site_contains=site_contains)
 
         return slabs
 
     def dissociation_reaction(self,
-                              reactants,
+                              reactant,
                               products,
+                              bond_break,
+                              bonds_surf,
                               slab_reactants,
                               auto_construct=True,
-                              ranges_coads=[0.1, 5.],
+                              displ_max_reaction=3.,
+                              range_coadsorption=[0.1, 3.],
                               sites_names_list=None,
                               site_contains_list=None):
         """
         """
+        
         slab_clean = self.slab.copy()
+        reactant = reactant.copy()
         
         if sites_names_list is None:
-            sites_names_list = [None]*len(products)
+            sites_names_list = [None]*2
         if site_contains_list is None:
-            site_contains_list = [None]*len(products)
+            site_contains_list = [None]*2
         
-        centres_zero = self._get_adsorbates_centres(slab=slab_reactants)
+        fragments = self.get_dissociation_fragments(reactant=reactant,
+                                                    bond_break=bond_break)
+        tags = [-1 if i in bonds_surf else 0 for i, _ in enumerate(reactant)]
+        reactant.set_tags(tags)
+        products = [reactant[f] for f in fragments]
         
-        ranges_coads_new = [[0., ranges_coads[1]]]
+        indices = [f+len(slab_clean) for f in fragments[0]]
+        adsorbate = slab_reactants[indices]
+        centres = [adsorbate.get_center_of_mass()[:2]]
+        ranges_fragments = [[0., displ_max_reaction]]
         
-        slabs_with_ads = self.add_adsorbate_ranges(
+        slabs_first_product = self.add_adsorbate_ranges(
             adsorbate=products[0],
-            centres=centres_zero,
+            centres=centres,
             slab=slab_clean,
             auto_construct=auto_construct,
-            ranges_coads=ranges_coads_new,
+            ranges_coads=ranges_fragments,
             sites_names=sites_names_list[0],
             site_contains=site_contains_list[0])
         
         slabs_products = []
         
-        for slab in slabs_with_ads:
+        for slab in slabs_first_product:
             
-            centres = centres_zero+self._get_adsorbates_centres(slab=slab)
-            ranges_coads_new += ranges_coads
+            indices = [f+len(slab_clean) for f in fragments[1]]
+            adsorbate = slab_reactants[indices]
+            centres = [adsorbate.get_center_of_mass()[:2]]
+            ranges_coads = ranges_fragments[:]
+            for site in slab._site_numbers:
+                centres += [(np.sum(self.coordinates[site], axis=0) / 
+                             len(site))[:2]]
+                ranges_coads += [range_coadsorption]
 
             slabs_products += self.add_adsorbate_ranges(
                 adsorbate=products[1],
@@ -892,26 +949,46 @@ class Builder(AdsorptionSites):
         
         distances = []
         for slab_products in slabs_products:
-            slab_products.positions[[17, 18]] = slab_products.positions[[18, 17]]
+            indices = [i+len(slab_clean) for i in fragments[0]+fragments[1]]
+            slab_products = slab_clean+slab_products[indices]
             
             distances += [self._get_distance_reactants_products(
                 slab_reactants=slab_reactants,
                 slab_products=slab_products,
             )]
     
-        slabs_products = [x for _, x in sorted(zip(distances, slabs_products))]
+        indices_old = range(len(slabs_products))
+        indices = [x for _, x in sorted(zip(distances, indices_old))]
+        slabs_products = [slabs_products[i] for i in indices]
     
         return slabs_products
     
-    def _get_adsorbates_centres(self, slab):
+    def get_dissociation_fragments(self,
+                                   reactant,
+                                   bond_break):
         
-        slab_clean = self.slab.copy()
+        reactant = reactant.copy()
+        reactant.graph.remove_edge(*bond_break)
+        
+        fragments = []
+        for bond_index in bond_break:
+            succ = nx.bfs_successors(reactant.graph, bond_index)
+            branches = [int(s) for list_s in succ for s in list_s[1]]
+            fragment = [bond_index]+branches
+            fragments.append(fragment)
+    
+        return fragments
+    
+    def get_adsorbates_centres(self, slab, slab_clean=None):
+        
+        if slab_clean is None:
+            slab_clean = self.slab.copy()
         
         if len(slab) <= len(slab_clean):
             raise ValueError("No adsorbate present.")
         
-        adsorbates_old = slab[len(slab_clean):]
-        centres = [adsorbates_old.get_center_of_mass()]
+        adsorbate = slab[len(slab_clean):]
+        centres = [adsorbate.get_center_of_mass()]
     
         return centres
     
@@ -932,12 +1009,6 @@ class Builder(AdsorptionSites):
             diff = image.positions-images[i].positions
             norm = np.linalg.norm(diff, axis=1)
             distance += np.sum(norm)
-        
-        '''
-        from ase.gui.gui import GUI
-        gui = GUI(images)
-        gui.run()
-        '''
         
         return distance
     
@@ -984,6 +1055,12 @@ class Builder(AdsorptionSites):
         # Add graph connections
         for metal_index in self.index_surf[u]:
             slab.graph.add_edge(metal_index, bond+n_atoms_slab)
+
+        # Store site numbers
+        if hasattr(slab, '_site_numbers'):
+            slab._site_numbers += [[site]]
+        else:
+            slab._site_numbers = [[site]]
 
         # Get adsorption site tag
         tags = [self.get_site_tag(int(s)) for s in sites]
@@ -1107,13 +1184,17 @@ class Builder(AdsorptionSites):
             for metal_index in self.index_surf[u]:
                 slab.graph.add_edge(metal_index, bonds[i]+n_atoms_slab)
 
+        # Store site numbers
+        if hasattr(slab, '_site_numbers'):
+            slab._site_numbers += [edge]
+        else:
+            slab._site_numbers = [edge]
+
         # Get adsorption site tag
         tags = ['-'.join([self.get_site_tag(int(e)) for e in edges[i]])
                 for i in range(len(edges))]
-        
         number = len([tag for tag in tags[:edge_index]
                       if tag == tags[edge_index]])
-        
         slab.site_tag = f'{tags[edge_index]}-{number:02d}'
 
         return slab

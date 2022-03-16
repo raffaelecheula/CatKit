@@ -158,6 +158,9 @@ class Gratoms(ase.Atoms):
         if hasattr(self, '_graph'):
             atoms._graph = self._graph.copy()
 
+        if hasattr(self, '_site_numbers'):
+            atoms._site_numbers = self._site_numbers.copy()
+
         return atoms
 
     def __getitem__(self, i):
