@@ -130,6 +130,20 @@ class AdsorptionSites():
 
         return self.names[sel]
 
+    def update_slab(self, slab_new, update_coordinates=False):
+        """Update the slab."""
+        
+        if len(slab_new) != len(self.slab):
+            raise ValueError(
+                "Number of atoms of old and new slab must be equal!")
+
+        self.slab = slab_new
+        symbols_all = list(self.slab.symbols)*self.repetitions
+        self.symbols = np.array(symbols_all)[self.index_surf]
+
+        if update_coordinates:
+            self.coordinates = np.dot(self.frac_coords, slab_new.cell)
+
     def _get_higher_coordination_sites(self,
                                        coords_surf,
                                        allow_obtuse=True):
@@ -850,7 +864,7 @@ class Builder(AdsorptionSites):
                 auto_construct=auto_construct)]
         
         return slabs
-        
+    
     def coadsorption(self,
                      slabs_with_ads,
                      adsorbate,
@@ -948,14 +962,21 @@ class Builder(AdsorptionSites):
                 site_contains=site_contains_list[1])
         
         distances = []
-        for slab_products in slabs_products:
-            indices = [i+len(slab_clean) for i in fragments[0]+fragments[1]]
-            slab_products = slab_clean+slab_products[indices]
+        for i, _ in enumerate(slabs_products):
+            indices = [j+len(slab_clean) for j in fragments[0]+fragments[1]]
+            slab = slab_clean+slabs_products[i][indices]
             
             distances += [self._get_distance_reactants_products(
                 slab_reactants=slab_reactants,
-                slab_products=slab_products,
+                slab_products=slab,
             )]
+        
+            site_numbers = slabs_products[i]._site_numbers
+            slab._site_numbers = site_numbers
+            slab.site_tag = '_'.join([self.get_site_tag(index=index) 
+                                      for index in site_numbers])
+            
+            slabs_products[i] = slab
     
         indices_old = range(len(slabs_products))
         indices = [x for _, x in sorted(zip(distances, indices_old))]
@@ -1064,9 +1085,10 @@ class Builder(AdsorptionSites):
 
         # Get adsorption site tag
         tags = [self.get_site_tag(int(s)) for s in sites]
-        number = len([tag for tag in tags[:site_index]
-                      if tag == tags[site_index]])
-        slab.site_tag = f'{tags[site_index]}-{number:02d}'
+        tag_num = len([tag for tag in tags[:site_index]
+                       if tag == tags[site_index]])
+        slab.site_tag = tags[site_index]
+        slab.tag_num = tag_num
 
         return slab
 
@@ -1191,11 +1213,11 @@ class Builder(AdsorptionSites):
             slab._site_numbers = [edge]
 
         # Get adsorption site tag
-        tags = ['-'.join([self.get_site_tag(int(e)) for e in edges[i]])
-                for i in range(len(edges))]
-        number = len([tag for tag in tags[:edge_index]
-                      if tag == tags[edge_index]])
-        slab.site_tag = f'{tags[edge_index]}-{number:02d}'
+        tags = [self.get_site_tag(e) for e in edges]
+        tag_num = len([tag for tag in tags[:edge_index]
+                       if tag == tags[edge_index]])
+        slab.site_tag = tags[edge_index]
+        slab.tag_num = tag_num
 
         return slab
 
@@ -1236,8 +1258,11 @@ class Builder(AdsorptionSites):
     def get_site_tag(self, index):
         """Return the tag of an active site."""
         
-        site_tag = (self.names[index]+'['+
-                    ','.join(sorted([f'{self.symbols[i]}.{self.ncoord_surf[i]}'
-                              for i in self.r1_topology[index]]))+']')
-
+        if isinstance(index, (list, np.ndarray)):
+            site_tag = '-'.join([self.get_site_tag(int(i)) for i in index])
+        else:
+            site_tag = (self.names[index]+'['+','.join(sorted(
+                [f'{self.symbols[i]}.{self.ncoord_surf[i]}'
+                    for i in self.r1_topology[index]]))+']')
+        
         return site_tag
