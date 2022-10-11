@@ -137,7 +137,9 @@ class AdsorptionSites():
             raise ValueError(
                 "Number of atoms of old and new slab must be equal!")
 
-        self.slab = slab_new
+        self.slab.positions = slab_new.positions
+        self.slab.symbols = slab_new.symbols
+        self.slab.magmoms = slab_new.get_initial_magnetic_moments()
         symbols_all = list(self.slab.symbols)*self.repetitions
         self.symbols = np.array(symbols_all)[self.index_surf]
 
@@ -413,6 +415,35 @@ class AdsorptionSites():
 
         return vectors
     
+    def get_adsorption_vector_edge(self, edge):
+        """Returns the vectors representing the furthest distance from
+        the neighboring atoms.
+
+        Parameters
+        ----------
+        edge : numpy.ndarray (2)
+            Edge for which to calculate the adsorption vector.
+
+        Returns
+        -------
+        vectors : numpy.ndarray (3)
+            Adsorption vector for edge.
+        """
+        
+        coords = self.coordinates[edge]
+        r1top = self.r1_topology[edge]
+        r2top = self.r2_topology[edge]
+
+        plane_points = r1top[0]+r1top[1]
+        if len(plane_points) < 3:
+            plane_points += [i for i in r2top[0] if i in r2top[1]]
+        if len(plane_points) < 3:
+            plane_points += r2top[0]+r2top[1]
+        
+        vector = utils.plane_normal(self.coords_surf[plane_points])
+
+        return vector
+
     def get_adsorption_edges_linked(self,
                                     sites_names=None,
                                     site_contains=None,
@@ -923,16 +954,25 @@ class Builder(AdsorptionSites):
                                                     bond_break=bond_break)
         tags = [-1 if i in bonds_surf else 0 for i, _ in enumerate(reactant)]
         reactant.set_tags(tags)
-        products = [reactant[f] for f in fragments]
+        
+        product_first = reactant.copy()
+        del product_first[fragments[1]]
+        product_second = reactant.copy()
+        del product_second[fragments[0]]
         
         indices = [f+len(slab_clean) for f in fragments[0]]
-        adsorbate = slab_reactants[indices]
-        centres = [adsorbate.get_center_of_mass()[:2]]
+        ads_first = slab_reactants.copy()
+        del ads_first[[i for i in range(len(ads_first)) if i not in indices]]
+        centres_first = [ads_first.get_center_of_mass()[:2]]
         ranges_fragments = [[0., displ_max_reaction]]
         
+        indices = [f+len(slab_clean) for f in fragments[1]]
+        ads_second = slab_reactants.copy()
+        del ads_second[[i for i in range(len(ads_second)) if i not in indices]]
+        
         slabs_first_product = self.add_adsorbate_ranges(
-            adsorbate=products[0],
-            centres=centres,
+            adsorbate=product_first,
+            centres=centres_first,
             slab=slab_clean,
             auto_construct=auto_construct,
             ranges_coads=ranges_fragments,
@@ -943,18 +983,16 @@ class Builder(AdsorptionSites):
         
         for slab in slabs_first_product:
             
-            indices = [f+len(slab_clean) for f in fragments[1]]
-            adsorbate = slab_reactants[indices]
-            centres = [adsorbate.get_center_of_mass()[:2]]
+            centres_second = [ads_second.get_center_of_mass()[:2]]
             ranges_coads = ranges_fragments[:]
             for site in slab._site_numbers:
-                centres += [(np.sum(self.coordinates[site], axis=0) / 
-                             len(site))[:2]]
+                centres_second += [(np.sum(self.coordinates[site], axis=0) / 
+                                    len(site))[:2]]
                 ranges_coads += [range_coadsorption]
 
             slabs_products += self.add_adsorbate_ranges(
-                adsorbate=products[1],
-                centres=centres,
+                adsorbate=product_second,
+                centres=centres_second,
                 slab=slab,
                 auto_construct=auto_construct,
                 ranges_coads=ranges_coads,
@@ -963,12 +1001,13 @@ class Builder(AdsorptionSites):
         
         distances = []
         for i, _ in enumerate(slabs_products):
-            indices = [j+len(slab_clean) for j in fragments[0]+fragments[1]]
-            slab = slab_clean+slabs_products[i][indices]
+            indices = list(range(len(slab_clean)))
+            indices += [j+len(slab_clean) for j in fragments[0]+fragments[1]]
+            slab = slabs_products[i][indices]
             
             distances += [self._get_distance_reactants_products(
-                slab_reactants=slab_reactants,
-                slab_products=slab,
+                slab_reactants=slab_reactants[len(slab_clean):],
+                slab_products=slab[len(slab_clean):],
             )]
         
             site_numbers = slabs_products[i]._site_numbers
@@ -1022,6 +1061,9 @@ class Builder(AdsorptionSites):
         images = [slab_reactants]
         images += [slab_reactants.copy() for _ in range(n_images-2)]
         images += [slab_products]
+
+        #slab_reactants.edit()
+        #slab_products.edit()
 
         neb = NEB(images)
         neb.interpolate('idpp')
@@ -1097,8 +1139,11 @@ class Builder(AdsorptionSites):
                            bonds,
                            edges,
                            edge_index=0,
-                           auto_construct=True,
-                           slab=None):
+                           auto_construct=False,
+                           slab=None,
+                           r_mult=0.90,
+                           n_iter_max=10,
+                           dn_thr=1e-5):
         """Attach an adsorbate to two active sites."""
         
         atoms_ads = adsorbate.copy()
@@ -1108,40 +1153,53 @@ class Builder(AdsorptionSites):
         if slab is None:
             slab = self.slab.copy()
         
-        # Improved position estimate for site.
-        r_bonds = radii[atoms_ads.numbers[bonds]] * 0.95
-        topology_edge = self.r1_topology[edge]
-        for i, u in enumerate(topology_edge):
-            r_site = radii[slab[self.index_surf[u]].numbers] * 0.95
+        # Get adsorption vector.
+        uvec1 = self.get_adsorption_vector_edge(edge=edge)
+        zvectors = [uvec1, uvec1]
+
+        old_positions = [
+            atoms_ads[bonds[0]].position, atoms_ads[bonds[1]].position]
+        new_positions = coords_edge.copy()
+
+        # Iterate to position the adsorbate close to all the atoms of the edge.
+        for i in range(n_iter_max):
+            r_bonds = radii[atoms_ads.numbers[bonds]] * r_mult
+            topology_edge = self.r1_topology[edge]
             top_sites = self.coordinates[self.connections == 1]
-            coords_edge[i] = utils.trilaterate(top_sites[u], r_bonds[i]+r_site)
+            for i, u in enumerate(topology_edge):
+                r_site = radii[slab[self.index_surf[u]].numbers] * r_mult
+                new_positions[i] = utils.trilaterate(
+                    top_sites[u], r_bonds[i]+r_site, zvector=zvectors[i])
 
-        v_site = coords_edge[1]-coords_edge[0]
-        d_site = np.linalg.norm(v_site)
-        uvec0 = v_site/d_site
-        v_bond = atoms_ads[bonds[0]].position-atoms_ads[bonds[1]].position
-        d_bond = np.linalg.norm(v_bond)
-        dn = (d_bond-d_site)/2
+            v_site = new_positions[1]-new_positions[0]
+            d_site = np.linalg.norm(v_site)
+            uvec0 = v_site/d_site
+            v_bond = old_positions[1]-old_positions[0]
+            d_bond = np.linalg.norm(v_bond)
+            dn = (d_bond-d_site)/2
 
-        base_position0 = coords_edge[0]-uvec0*dn
-        base_position1 = coords_edge[1]+uvec0*dn
+            new_positions = [
+                new_positions[0]-uvec0*dn, new_positions[1]+uvec0*dn]
 
-        # Position the base atoms
-        atoms_ads[bonds[0]].position = base_position0
-        atoms_ads[bonds[1]].position = base_position1
+            for i in range(2):
+                zvectors[i] = new_positions[i]-coords_edge[i]
+                zvectors[i] /= np.linalg.norm(zvectors[i])
+            
+            if abs(dn) < dn_thr:
+                break
 
-        uvec1 = self.get_adsorption_vectors(sites=edge)
-        uvec2 = np.cross(uvec1, uvec0)
-        uvec2 /= -np.linalg.norm(uvec2, axis=1)[:, None]
-        uvec1 = np.cross(uvec2, uvec0)
-
-        center = adsorbate[bonds[0]].position
-        center_new = atoms_ads[bonds[0]].position
-        a1 = adsorbate[bonds[1]].position-center
-        a2 = atoms_ads[bonds[1]].position-center_new
+        a1 = old_positions[1]-old_positions[0]
+        a2 = new_positions[1]-new_positions[0]
         b1 = [0, 0, 1]
-        b2 = uvec1[0].tolist()
+        b2 = uvec1.tolist()
         rot_matrix = rotation_matrix(a1, a2, b1, b2)
+
+        for k, _ in enumerate(atoms_ads):
+            atoms_ads[k].position = np.dot(atoms_ads[k].position, rot_matrix.T)
+        
+        atoms_ads.translate(new_positions[0]-old_positions[0])
+
+        uvec2 = np.cross(uvec1, uvec0)
 
         if auto_construct is True:
             # Temporarily break adsorbate bond
@@ -1157,7 +1215,7 @@ class Builder(AdsorptionSites):
 
             branches0 = list(nx.bfs_successors(graph_ads, bonds[0]))
             if len(branches0[0][1]) != 0:
-                uvec = [-uvec0, uvec1[0], uvec2[0]]
+                uvec = [-uvec0, uvec1, uvec2]
                 self._branch_bidentate(atoms_ads, uvec, branches0[0])
                 for branch in branches0[1:]:
                     positions = catkit.gen.molecules._branch_molecule(
@@ -1167,7 +1225,7 @@ class Builder(AdsorptionSites):
             
             branches1 = list(nx.bfs_successors(graph_ads, bonds[1]))
             if len(branches1[0][1]) != 0:
-                uvec = [uvec0, uvec1[0], uvec2[0]]
+                uvec = [uvec0, uvec1, uvec2]
                 self._branch_bidentate(atoms_ads, uvec, branches1[0])
                 for branch in branches1[1:]:
                     positions = catkit.gen.molecules._branch_molecule(
@@ -1175,22 +1233,6 @@ class Builder(AdsorptionSites):
                     for j, b in enumerate(branch[1]):
                         atoms_ads[b].position = positions[j]
         
-            for k in links:
-                atoms_ads[k].position = np.dot(atoms_ads[k].position-center,
-                                               rot_matrix.T)+center_new
-                branches2 = list(nx.bfs_successors(graph_ads, k))
-                for b in branches2[0][1]:
-                    atoms_ads[b].position = np.dot(atoms_ads[b].position-center,
-                                                   rot_matrix.T)+center_new
-
-        else:
-            other_atoms = [i for i, _ in enumerate(atoms_ads) 
-                           if i not in bonds]
-
-            for k in other_atoms:
-                atoms_ads[k].position = np.dot(atoms_ads[k].position-center,
-                                               rot_matrix.T)+center_new
-
         n_atoms_slab = len(slab)
         slab += atoms_ads
         
