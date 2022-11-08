@@ -14,7 +14,8 @@ radii = defaults.get('radii')
 class AdsorptionSites():
     """Adsorption site object."""
 
-    def __init__(self, slab, surface_atoms=None, tol=1e-5, cutoff=5.0):
+    def __init__(self, slab, surface_atoms=None, tol=1e-5, cutoff=5.0, 
+                 centre_mult=(0.937, 0.895)):
         """Create an extended unit cell of the surface sites for
         use in identifying other sites.
 
@@ -43,34 +44,49 @@ class AdsorptionSites():
 
         symbols_all = list(slab.symbols)*self.repetitions
         self.symbols = np.array(symbols_all)[self.index_surf]
+        self.ncoord_surf = self.get_coordination_numbers()
 
-        self.sites_dict = self._get_higher_coordination_sites(
+        sites_dict = self._get_higher_coordination_sites(
             coords_surf=self.coords_surf)
         
+        # Get sites.
         self.coordinates = []
         self.r1_topology = []
         self.r2_topology = []
         self.connections = []
-        self.names = []
-        for name in self.sites_dict:
-            coordinates, r1_topology, r2_topology = self.sites_dict[name]
+        self.sites_names = []
+        for name in sites_dict:
+            coordinates, r1_topology, r2_topology = sites_dict[name]
             self.coordinates += coordinates
             self.r1_topology += r1_topology
             self.r2_topology += r2_topology
             self.connections += [self.connections_dict[name]]*len(coordinates)
-            self.names += [name]*len(coordinates)
+            self.sites_names += [name]*len(coordinates)
         self.coordinates = np.array(self.coordinates)
         self.r1_topology = np.array(self.r1_topology, dtype=object)
         self.r2_topology = np.array(self.r2_topology, dtype=object)
         self.connections = np.array(self.connections, dtype=int)
         self.frac_coords = np.dot(self.coordinates, np.linalg.pinv(slab.cell))
-        self.names = np.array(self.names, dtype=object)
-        self.ncoord_surf = self.get_coordination_numbers()
+        self.sites_names = np.array(self.sites_names, dtype=object)
         self.sites = np.arange(len(self.coordinates))
-        self.n_sites = len(self.coordinates)
+        self.n_sites = len(self.sites)
         
-        self.centre = (np.sum(self.slab[surface_atoms].positions, axis=0) /
-                       len(self.slab[surface_atoms]))[:2]*[0.95,0.90]
+        # Order sites to have low indices close to the centre.
+        self.centre_mult = centre_mult
+        self.frac_centre = (
+            np.sum(slab.get_scaled_positions(wrap=False)[surface_atoms],
+            axis=0)/len(surface_atoms))[:2]*self.centre_mult
+        self.centre = np.dot(self.frac_centre, slab.cell[:2,:2])
+        self.indices = np.argsort(np.linalg.norm(
+            self.frac_coords[:,:2]-self.frac_centre, axis=1))
+        self.coordinates = self.coordinates[self.indices]
+        self.r1_topology = self.r1_topology[self.indices]
+        self.r2_topology = self.r2_topology[self.indices]
+        self.connections = self.connections[self.indices]
+        self.frac_coords = self.frac_coords[self.indices]
+        self.sites_names = self.sites_names[self.indices]
+        
+        self.sites_to_surf = np.argsort(self.sites[self.indices])
 
         self.screen = ((self.frac_coords[:, 0] > 0.-self.tol) &
                        (self.frac_coords[:, 0] < 1.-self.tol) &
@@ -129,7 +145,7 @@ class AdsorptionSites():
         else:
             sel = self.get_periodic_sites()
 
-        return self.names[sel]
+        return self.sites_names[sel]
 
     def update_slab(self, slab_new, update_coordinates=False):
         """Update the slab."""
@@ -144,8 +160,11 @@ class AdsorptionSites():
         symbols_all = list(self.slab.symbols)*self.repetitions
         self.symbols = np.array(symbols_all)[self.index_surf]
 
-        if update_coordinates:
+        if update_coordinates is True:
             self.coordinates = np.dot(self.frac_coords, slab_new.cell)
+            self.coordinates -= (
+                np.max(self.coords_surf)-np.max(slab_new.positions))
+            self.centre = np.dot(self.frac_centre, slab_new.cell[:2,:2])
 
     def _get_higher_coordination_sites(self,
                                        coords_surf,
@@ -282,14 +301,12 @@ class AdsorptionSites():
             periodic boundary conditions.
         """
         
-        periodic_sites = np.arange(self.frac_coords.shape[0])
-
         if screen:
-            periodic_sites = periodic_sites[self.screen]
+            periodic_sites = self.sites[self.screen]
 
         else:
-            periodic = periodic_sites.copy()[self.screen]
-            for p in periodic:
+            periodic_sites = self.sites.copy()
+            for p in self.sites[self.screen]:
                 matched = utils.matching_sites(self.frac_coords[p],
                                                self.frac_coords)
                 periodic_sites[matched] = p
@@ -402,37 +419,34 @@ class AdsorptionSites():
             sites = sites[mask]
 
         if sites_names is not None:
-            mask = [self.names[s] in sites_names for s in sites]
+            mask = [self.sites_names[s] in sites_names for s in sites]
             sites = sites[mask]
 
         return sites
 
-    def get_adsorption_vectors(self, sites):
-        """Returns the vectors representing the furthest distance from
+    def get_adsorption_vector(self, site):
+        """Returns the vector representing the furthest distance from
         the neighboring atoms.
 
         Parameters
         ----------
-        sites : numpy.ndarray (n,)
-            Sites for which to calculate the adsorption vectors.
+        site : int
+            Site for which to calculate the adsorption vector.
 
         Returns
         -------
-        vectors : numpy.ndarray (n, 3)
-            Adsorption vectors for surface sites.
+        vectors : numpy.ndarray (3)
+            Adsorption vector for surface site.
         """
         
-        coords = self.coordinates[sites]
-        r1top = self.r1_topology[sites]
-        r2top = self.r2_topology[sites]
+        r1top = self.r1_topology[site]
+        r2top = self.r2_topology[site]
 
-        vectors = np.empty((coords.shape[0], 3))
-        for i, _ in enumerate(coords):
-            plane_points = np.array(np.hstack([r1top[i], r2top[i]]), dtype=int)
-            vectors[i] = utils.plane_normal(self.coords_surf[plane_points])
+        plane_points = np.array(np.hstack([r1top, r2top]), dtype=int)
+        vector = utils.plane_normal(self.coords_surf[plane_points])
 
-        return vectors
-    
+        return vector
+
     def get_adsorption_vector_edge(self, edge):
         """Returns the vectors representing the furthest distance from
         the neighboring atoms.
@@ -448,7 +462,6 @@ class AdsorptionSites():
             Adsorption vector for edge.
         """
         
-        coords = self.coordinates[edge]
         r1top = self.r1_topology[edge]
         r2top = self.r2_topology[edge]
 
@@ -583,7 +596,8 @@ class AdsorptionSites():
 
         if sites_one is None:
             if unique is True:
-                sites_one = self.get_adsorption_sites(topology_sym=topology_sym)
+                sites_one = self.get_adsorption_sites(
+                    topology_sym=topology_sym)
             elif screen is True:
                 sites_one = self.get_periodic_sites()
             else:
@@ -611,7 +625,7 @@ class AdsorptionSites():
                     key=lambda n: np.linalg.norm(coords[n]-self.centre))
             for n in neighbors:
                 if sites_names:
-                    names_list = [self.names[s], self.names[n]]
+                    names_list = [self.sites_names[s], self.sites_names[n]]
                     if isinstance(sites_names[0], dict):
                         names_matched = [names for names in sites_names
                                          if names_list == names['bonds']]
@@ -624,37 +638,43 @@ class AdsorptionSites():
                     if (isinstance(sites_names[0], dict) 
                         and None not in names_over):
                         conn = [m for m in neighbors_all if m != n
-                                if self.names[m] in names_over
+                                if self.sites_names[m] in names_over
                                 if np.linalg.norm(coords[m]-coords[s])
                                    + np.linalg.norm(coords[m]-coords[n])
                                    - np.linalg.norm(coords[s]-coords[n])
                                    < self.tol*1e2]
                         if len(conn) == 0:
                             continue
-                edge_new = [sites_all[s], sites_all[n],
+                # Vectors containing the unique index of the first site,
+                # the unique index of the second site, their distance,
+                # the distances to the surface atoms. They are used to screen
+                # unique edges.
+                edge_obj = [sites_all[s], sites_all[n],
                             np.round(norm[n,0], decimals=3)]
                 dist_top = []
                 for t in r1top[s]:
+                    t = self.sites_to_surf[t]
                     norm_i = np.linalg.norm(coords[n]-coords[t])
                     dist_top += [(sites_all[t], 
                                   np.round(norm_i, decimals=3))]
-                edge_new += [sorted(dist_top)]
+                edge_obj += [sorted(dist_top)]
                 if symmetric_ads is True:
                     edge_rev = [sites_all[n], sites_all[s],
                                 np.round(norm[n,0], decimals=3)]
                     dist_top = []
                     for t in r1top[n]:
+                        t = self.sites_to_surf[t]
                         norm_i = np.linalg.norm(coords[s]-coords[t])
                         dist_top += [(sites_all[t],
                                       np.round(norm_i, decimals=3))]
                     edge_rev += [sorted(dist_top)]
                 else:
-                    edge_rev = edge_new
-                if edge_new in edges_sym or edge_rev in edges_sym:
+                    edge_rev = edge_obj
+                if edge_obj in edges_sym or edge_rev in edges_sym:
                     uniques += [False]
                 else:
                     uniques += [True]
-                    edges_sym += [edge_new]
+                    edges_sym += [edge_obj]
                 edges += [[s, n]]
 
         edges = np.array(edges)
@@ -679,7 +699,7 @@ class AdsorptionSites():
         mask = [False]*len(sites)
         for i, site in enumerate(sites):
             if isinstance(site, (list, np.ndarray)):
-                topologies = [i for e in site for i in self.r1_topology[e]]
+                topologies = [j for e in site for j in self.r1_topology[e]]
             else:
                 topologies = self.r1_topology[site]
             for t in topologies:
@@ -691,45 +711,87 @@ class AdsorptionSites():
 
         return mask
 
-    def plot(self, savefile=None):
+    def plot(self, scale_fig=1.2, scale_radii=0.90, delta_cell=0.50, 
+             symbols_size=0.2, savefile=None):
         """Create a plot of the sites."""
 
-        x_len = 1.2*(self.slab.cell[0][0]+self.slab.cell[1][0])
-        y_len = 1.2*(self.slab.cell[0][1]+self.slab.cell[1][1])
-        fig = plt.figure(figsize=(x_len, y_len), frameon=False)
+        figsize = np.dot(self.slab.cell.T, np.ones(3))[:2]*scale_fig
+        fig = plt.figure(figsize=figsize, frameon=False)
         ax = fig.add_axes([0, 0, 1, 1])
 
         from matplotlib import patches
-        from ase.data import covalent_radii
+        from ase.data import atomic_numbers, covalent_radii
         from ase.data.colors import jmol_colors
-        for a in self.slab:
-            radius = covalent_radii[a.number] * 0.90
-            color = jmol_colors[a.number]
-            circle = patches.Circle(a.position[:2], radius=radius, 
+
+        screen_large = ((self.frac_coords[:, 0] > 0.-delta_cell-self.tol) &
+                        (self.frac_coords[:, 0] < 1.+delta_cell+self.tol) &
+                        (self.frac_coords[:, 1] > 0.-delta_cell-self.tol) &
+                        (self.frac_coords[:, 1] < 1.+delta_cell+self.tol))
+
+        for i in np.argsort(self.coords_surf[:, 2]):
+            coords = self.coords_surf[i]
+            if not screen_large[self.sites_to_surf[i]]:
+                continue
+            number = atomic_numbers[self.symbols[i]]
+            radius = covalent_radii[number]*scale_radii
+            color = jmol_colors[number]
+            if not self.screen[self.sites_to_surf[i]]:
+                color = (color+[1.,1.,1.])/2.
+            circle = patches.Circle(xy=coords[:2], radius=radius, 
                                     facecolor=color, edgecolor='k')
             ax.add_patch(circle)
 
+        cell_points = np.array([[0.,0.],
+                                self.slab.cell[0][:2],
+                                np.dot(self.slab.cell.T, np.ones(3))[:2],
+                                self.slab.cell[1][:2],
+                                [0.,0.]])
+        ax.plot(*cell_points.T, color='k', linestyle='--', linewidth=1)
+
         obj_list = [
-            [(self.connections == 1), 'r', 0.4],
-            [(self.connections == 2), 'b', 0.4],
-            [(self.connections == 3), 'y', 0.4],
-            [(self.connections == 4), 'g', 0.4],
-            [(self.connections == 1) & self.screen, 'r', 0.8],
-            [(self.connections == 2) & self.screen, 'b', 0.8],
-            [(self.connections == 3) & self.screen, 'y', 0.8],
-            [(self.connections == 4) & self.screen, 'g', 0.8],
+            [(self.connections == 1) & screen_large, (1.00, 0.50, 0.50)],
+            [(self.connections == 2) & screen_large, (0.50, 0.75, 1.00)],
+            [(self.connections == 3) & screen_large, (0.50, 0.90, 0.50)],
+            [(self.connections == 4) & screen_large, (1.00, 1.00, 0.50)],
+            [(self.connections == 1) & self.screen, (1.00, 0.00, 0.00)],
+            [(self.connections == 2) & self.screen, (0.00, 0.50, 1.00)],
+            [(self.connections == 3) & self.screen, (0.00, 0.80, 0.00)],
+            [(self.connections == 4) & self.screen, (1.00, 1.00, 0.00)],
         ]
         
         for obj in obj_list:
-            mask, color, alpha = obj
-            ax.plot(self.coordinates[:, 0][mask],
-                    self.coordinates[:, 1][mask],
-                    marker='o', markersize=12,
-                    color=color, alpha=alpha, linestyle=' ')
+            mask, color = obj
+            coords = self.coordinates[mask][:,:2]
+            for i, top in enumerate(self.r1_topology[mask]):
+                if len(top) == 1:
+                    continue
+                dirs = self.coords_surf[top][:,:2]-coords[i]
+                points = dirs/np.linalg.norm(dirs)*symbols_size+coords[i]
+                coords = np.append(coords, points, axis=0)
+            ax.plot(coords[:,0], coords[:,1], marker='o', markersize=12,
+                    color=color, alpha=1.0, linestyle=' ')
+            
+            #for i, top in enumerate(self.r1_topology[mask]):
+            #    if len(top) == 1:
+            #        xy = self.coords_surf[top][0,:2]
+            #        circle = patches.Circle(xy=xy, radius=symbols_size, 
+            #                                facecolor=color)
+            #        ax.add_patch(circle)
+            #    else:
+            #        dirs = self.coords_surf[top][:,:2]-coords[i]
+            #        points = dirs/np.linalg.norm(dirs)*symbols_size+coords[i]
+            #        #plt.plot(points[:,0], points[:,1], color=color, linewidth=10)
+            #        patch = patches.PathPatch(points, facecolor=color)
+            #        ax.add_patch(patch)
+
+        ax.plot(*self.centre, marker='x', markersize=4, color='k')
 
         for i, coords in enumerate(self.coordinates):
-            ax.text(*coords[:2], i)
+            if screen_large[i]:
+                ax.text(*coords[:2], i, horizontalalignment='center',
+                        verticalalignment='center',)
 
+        ax.axis('equal')
         ax.axis('off')
         if savefile:
             plt.savefig(savefile, transparent=True)
@@ -768,7 +830,8 @@ class Builder(AdsorptionSites):
                       slab=None,
                       screen=True,
                       unique=True,
-                      sites_avail=None):
+                      sites_avail=None,
+                      sites_list=None):
         """Add an adsorbate to a slab.
 
         Parameters
@@ -809,13 +872,18 @@ class Builder(AdsorptionSites):
             raise ValueError('Specify the index of atoms to bond.')
 
         elif len(bonds) == 1:
-            sites = self.get_adsorption_sites(
-                sites_names=sites_names,
-                site_contains=site_contains,
-                topology_sym=topology_sym,
-                screen=screen,
-                unique=unique,
-                sites_avail=sites_avail)
+            if sites_list is not None:
+                sites = np.array(sites_list)
+                if isinstance(sites[0], np.ndarray) and len(sites[0]) == 1:
+                    sites = np.concatenate(sites)
+            else:
+                sites = self.get_adsorption_sites(
+                    sites_names=sites_names,
+                    site_contains=site_contains,
+                    topology_sym=topology_sym,
+                    screen=screen,
+                    unique=unique,
+                    sites_avail=sites_avail)
             
             if index in (None, -1):
                 index = range(len(sites))
@@ -832,7 +900,9 @@ class Builder(AdsorptionSites):
                     slab=slab)]
 
         elif len(bonds) == 2:
-            if linked_edges is True:
+            if sites_list is not None:
+                edges = np.array(sites_list)
+            elif linked_edges is True:
                 edges = self.get_adsorption_edges_linked(
                     sites_names=sites_names,
                     site_contains=site_contains,
@@ -979,35 +1049,27 @@ class Builder(AdsorptionSites):
         
         slab_clean = self.slab.copy()
         n_atoms_clean = len(slab_clean)
-        reactant = reactant.copy()
         
         if sites_names_list is None:
             sites_names_list = [None]*2
         if site_contains_list is None:
             site_contains_list = [None]*2
         
-        fragments = self.get_dissociation_fragments(reactant=reactant,
-                                                    bond_break=bond_break)
-        tags = [-1 if i in bonds_surf else 0 for i, _ in enumerate(reactant)]
-        reactant.set_tags(tags)
+        products, indices_frag = self.get_dissociation_fragments(
+            reactant=reactant,
+            bond_break=bond_break,
+            bonds_surf=bonds_surf)
         
-        product_first = reactant.copy()
-        del product_first[fragments[1]]
-        product_second = reactant.copy()
-        del product_second[fragments[0]]
-        
-        indices = [f+n_atoms_clean for f in fragments[0]]
-        ads_first = slab_reactants.copy()
-        del ads_first[[i for i in range(len(ads_first)) if i not in indices]]
+        indices_first = [f+n_atoms_clean for f in indices_frag[0]]
+        ads_first = slab_reactants[indices_first]
         centres_first = [ads_first.get_center_of_mass()[:2]]
         ranges_fragments = [[0., displ_max_reaction]]
         
-        indices = [f+n_atoms_clean for f in fragments[1]]
-        ads_second = slab_reactants.copy()
-        del ads_second[[i for i in range(len(ads_second)) if i not in indices]]
+        indices_second = [f+n_atoms_clean for f in indices_frag[1]]
+        ads_second = slab_reactants[indices_second]
         
         slabs_first_product = self.add_adsorbate_ranges(
-            adsorbate=product_first,
+            adsorbate=products[0],
             centres=centres_first,
             slab=slab_clean,
             auto_construct=auto_construct,
@@ -1028,7 +1090,7 @@ class Builder(AdsorptionSites):
                 ranges_coads += [range_coadsorption]
 
             slabs_products += self.add_adsorbate_ranges(
-                adsorbate=product_second,
+                adsorbate=products[1],
                 centres=centres_second,
                 slab=slab,
                 auto_construct=auto_construct,
@@ -1039,7 +1101,7 @@ class Builder(AdsorptionSites):
         
         distances = []
         indices = list(range(n_atoms_clean))
-        indices += [j+n_atoms_clean for j in fragments[0]+fragments[1]]
+        indices += [j+n_atoms_clean for j in indices_frag[0]+indices_frag[1]]
         
         for i, _ in enumerate(slabs_products):
             slab = slabs_products[i][indices]
@@ -1063,7 +1125,8 @@ class Builder(AdsorptionSites):
     
     def get_dissociation_fragments(self,
                                    reactant,
-                                   bond_break):
+                                   bond_break,
+                                   bonds_surf = []):
         
         reactant = reactant.copy()
         reactant.graph.remove_edge(*bond_break)
@@ -1076,7 +1139,12 @@ class Builder(AdsorptionSites):
             fragment.sort()
             fragments.append(fragment)
     
-        return fragments
+        tags = [-1 if i in bonds_surf else 0 for i, _ in enumerate(reactant)]
+        reactant.set_tags(tags)
+        
+        products = [reactant[f] for f in fragments]
+
+        return products, fragments
     
     def get_adsorbates_centres(self, slab, slab_clean=None):
         
@@ -1096,6 +1164,8 @@ class Builder(AdsorptionSites):
         """
         """
         from ase.neb import NEB
+        #from ase.neb import NEB, interpolate, idpp_interpolate
+        #from ase.optimize.lbfgs import LBFGS
         
         images = [slab_reactants]
         images += [slab_reactants.copy() for _ in range(n_images-2)]
@@ -1103,6 +1173,19 @@ class Builder(AdsorptionSites):
 
         neb = NEB(images)
         neb.interpolate('idpp')
+        #steps_idpp = 1e3
+        #fmax_idpp = 1e-2
+        #interpolate(images=images, mic=False, apply_constraint=False)
+        #idpp_interpolate(
+        #    images    = images,
+        #    traj      = None,
+        #    log       = None,
+        #    mic       = False,
+        #    steps     = steps_idpp,
+        #    fmax      = fmax_idpp,
+        #    optimizer = LBFGS,
+        #)
+
         distance = 0.
         for i, image in enumerate(images[1:]):
             diff = image.positions-images[i].positions
@@ -1122,17 +1205,17 @@ class Builder(AdsorptionSites):
         
         atoms_ads = adsorbate.copy()
         site = sites[site_index]
-        vector = self.get_adsorption_vectors(sites=[site])[0]
+        vector = self.get_adsorption_vector(site=site)
         if slab is None:
             slab = self.slab
         slab = slab.copy()
 
         # Improved position estimate for site.
-        u = self.r1_topology[site]
-        r_site = radii[slab[self.index_surf[u]].numbers]
+        r1top = self.r1_topology[site]
+        r_site = radii[slab[self.index_surf[r1top]].numbers]
         r_bond = radii[atoms_ads.numbers[bond]]
-        top_sites = self.coordinates[self.connections == 1]
-        base_position = utils.trilaterate(top_sites[u], r_bond+r_site, vector)
+        base_position = utils.trilaterate(
+            self.coords_surf[r1top], r_bond+r_site, vector)
 
         atoms_ads.translate(-atoms_ads.positions[bond])
 
@@ -1140,7 +1223,7 @@ class Builder(AdsorptionSites):
             atoms_ads = catkit.gen.molecules.get_3D_positions(atoms_ads, bond)
 
         if self.connections[site] == 2:
-            coords_brg = self.coordinates[self.r1_topology[site]]
+            coords_brg = self.coords_surf[r1top]
             direction = (coords_brg[1][:2]-coords_brg[0][:2])
             angle = np.arctan(direction[1]/(direction[0]+1e-10))
             atoms_ads.rotate(angle*180/np.pi, 'z')
@@ -1153,8 +1236,8 @@ class Builder(AdsorptionSites):
         slab += atoms_ads
 
         # Add graph connections
-        for metal_index in self.index_surf[u]:
-            slab.graph.add_edge(metal_index, bond+n_atoms_slab)
+        for surf_index in self.index_surf[r1top]:
+            slab.graph.add_edge(surf_index, bond+n_atoms_slab)
 
         # Store site numbers
         if 'site_numbers' in slab.info:
@@ -1200,13 +1283,12 @@ class Builder(AdsorptionSites):
 
         # Iterate to position the adsorbate close to all the atoms of the edge
         for i in range(n_iter_max):
-            r_bonds = radii[atoms_ads.numbers[bonds]] * r_mult
-            topology_edge = self.r1_topology[edge]
-            top_sites = self.coordinates[self.connections == 1]
-            for i, u in enumerate(topology_edge):
-                r_site = radii[slab[self.index_surf[u]].numbers] * r_mult
+            r_bonds = radii[atoms_ads.numbers[bonds]]*r_mult
+            for i, r1top in enumerate(self.r1_topology[edge]):
+                r_site = radii[slab[self.index_surf[r1top]].numbers]*r_mult
                 new_positions[i] = utils.trilaterate(
-                    top_sites[u], r_bonds[i]+r_site, zvector=zvectors[i])
+                    self.coords_surf[r1top], r_bonds[i]+r_site, 
+                    zvector=zvectors[i])
 
             v_site = new_positions[1]-new_positions[0]
             d_site = np.linalg.norm(v_site)
@@ -1285,9 +1367,9 @@ class Builder(AdsorptionSites):
                 for k in links:
                     slab.graph.add_edge(*np.array([bonds[0], k])+n_atoms_slab)
                     slab.graph.add_edge(*np.array([bonds[1], k])+n_atoms_slab)
-        for i, u in enumerate(topology_edge):
-            for metal_index in self.index_surf[u]:
-                slab.graph.add_edge(metal_index, bonds[i]+n_atoms_slab)
+        for i, r1top in enumerate(self.r1_topology[edge]):
+            for surf_index in self.index_surf[r1top]:
+                slab.graph.add_edge(surf_index, bonds[i]+n_atoms_slab)
 
         # Store site numbers
         if 'site_numbers' in slab.info:
@@ -1344,8 +1426,8 @@ class Builder(AdsorptionSites):
         if isinstance(index, (list, np.ndarray)):
             site_tag = '-'.join([self.get_site_tag(int(i)) for i in index])
         else:
-            site_tag = (self.names[index]+'['+','.join(sorted(
-                [f'{self.symbols[i]}.{self.ncoord_surf[i]}'
-                    for i in self.r1_topology[index]]))+']')
+            site_tag = (self.sites_names[index]+'['+','.join(sorted(
+                [f'{self.symbols[r1top]}.{self.ncoord_surf[r1top]}'
+                    for r1top in self.r1_topology[index]]))+']')
         
         return site_tag
