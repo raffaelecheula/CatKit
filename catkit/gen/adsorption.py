@@ -1204,7 +1204,7 @@ class Builder(AdsorptionSites):
         """Attach an adsorbate to one active site."""
         
         atoms_ads = adsorbate.copy()
-        site = sites[site_index]
+        site = int(sites[site_index])
         vector = self.get_adsorption_vector(site=site)
         if slab is None:
             slab = self.slab
