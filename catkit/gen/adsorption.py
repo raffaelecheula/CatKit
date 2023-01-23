@@ -1142,7 +1142,9 @@ class Builder(AdsorptionSites):
         tags = [-1 if i in bonds_surf else 0 for i, _ in enumerate(reactant)]
         reactant.set_tags(tags)
         
-        products = [reactant[f] for f in fragments]
+        products = [reactant.copy(), reactant.copy()]
+        del products[0][fragments[1]]
+        del products[1][fragments[0]]
 
         return products, fragments
     
@@ -1395,13 +1397,15 @@ class Builder(AdsorptionSites):
         num = atoms.numbers[[r] + nodes]
         d = radii[num[1:]] + radii[num[0]]
         c = atoms[r].position
+        positions = atoms.positions
 
         # Single additional atom
         if len(nodes) == 1:
             coord0 = c + \
                 d[0] * uvec[0] * np.cos(1 / 3. * np.pi) + \
                 d[0] * uvec[1] * np.sin(1 / 3. * np.pi)
-            atoms[nodes[0]].position = coord0
+            positions[nodes[0]] = coord0
+            atoms.positions = positions
 
         # Two branch system
         elif len(nodes) == 2:
@@ -1410,12 +1414,12 @@ class Builder(AdsorptionSites):
                 0.866 * d[0] * uvec[0] * np.cos(1 / 3. * np.pi) + \
                 0.866 * d[0] * uvec[2] * np.sin(1 / 3. * np.pi)
             atoms[nodes[0]].position = coord0
-
             coord1 = c + \
                 d[1] * uvec[1] * np.cos(1 / 3. * np.pi) + \
                 0.866 * d[1] * uvec[0] * np.cos(1 / 3. * np.pi) + \
                 0.866 * d[1] * -uvec[2] * np.sin(1 / 3. * np.pi)
-            atoms[nodes[1]].position = coord1
+            positions[nodes[1]] = coord0
+            atoms.positions = positions
 
         else:
             raise ValueError('Too many bonded atoms to position correctly.')
