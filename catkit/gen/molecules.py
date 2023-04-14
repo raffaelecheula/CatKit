@@ -103,8 +103,9 @@ def get_topologies(symbols, saturate=False):
         degree = connectivity.sum(axis=0)
 
         # Not fully connected (subgraph)
-        if np.any(degree == 0) or not \
-           nx.is_connected(nx.from_numpy_matrix(connectivity)):
+        try: connectivity_nx = nx.from_numpy_matrix(connectivity)
+        except: connectivity_nx = nx.from_numpy_array(connectivity)
+        if np.any(degree == 0) or not nx.is_connected(connectivity_nx):
             continue
 
         # Overbonded atoms.
