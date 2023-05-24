@@ -1114,6 +1114,8 @@ class Builder(AdsorptionSites):
             slab.info['site_numbers'] = site_numbers
             slab.info['site_tag'] = '_'.join([self.get_site_tag(index=index) 
                                               for index in site_numbers])
+            slab.info['site_id'] = '_'.join([self.get_site_id(index=index) 
+                                             for index in site_numbers])
             
             slabs_products[i] = slab
     
@@ -1253,6 +1255,8 @@ class Builder(AdsorptionSites):
                        if tag == tags[site_index]])
         slab.info['site_tag'] = tags[site_index]
         slab.info['tag_num'] = tag_num
+        
+        slab.info['site_id'] = self.get_site_id(site)
 
         return slab
 
@@ -1385,6 +1389,8 @@ class Builder(AdsorptionSites):
                        if tag == tags[edge_index]])
         slab.info['site_tag'] = tags[edge_index]
         slab.info['tag_num'] = tag_num
+        
+        slab.info['site_id'] = self.get_site_id(edge)
 
         return slab
 
@@ -1435,3 +1441,13 @@ class Builder(AdsorptionSites):
                     for r1top in self.r1_topology[index]]))+']')
         
         return site_tag
+
+    def get_site_id(self, index):
+        """Return the tag of an active site."""
+        
+        if isinstance(index, (list, np.ndarray)):
+            site_id = '-'.join([self.get_site_id(int(i)) for i in index])
+        else:
+            site_id = self.sites_names[index]+f'{index:03d}'
+        
+        return site_id
