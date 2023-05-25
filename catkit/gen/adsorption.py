@@ -1033,7 +1033,6 @@ class Builder(AdsorptionSites):
         return slabs
 
     def dissociation_reaction(self,
-                              reactant,
                               products,
                               bond_break,
                               bonds_surf,
@@ -1055,6 +1054,7 @@ class Builder(AdsorptionSites):
         if site_contains_list is None:
             site_contains_list = [None]*2
         
+        reactant = slab_reactants[n_atoms_clean:]
         products, indices_frag = self.get_dissociation_fragments(
             reactant=reactant,
             bond_break=bond_break,
@@ -1148,6 +1148,17 @@ class Builder(AdsorptionSites):
         del products[0][fragments[1]]
         del products[1][fragments[0]]
 
+        #for product in products:
+        #    bonds = np.where(product.get_tags() == -1)[0]
+        #    if len(bonds) == 1:
+        #        bond = bonds[0]
+        #        product.translate(-product[int(bond)].position)
+        #        succ = nx.dfs_successors(product.graph, bond)
+        #        if bond in succ:
+        #            a1 = sum([product[int(ii)].position for ii in succ[bond]])
+        #            a2 = [0, 0, 1]
+        #            product.rotate(a1, a2)
+
         return products, fragments
     
     def get_adsorbates_centres(self, slab, slab_clean=None):
@@ -1223,8 +1234,14 @@ class Builder(AdsorptionSites):
 
         atoms_ads.translate(-atoms_ads.positions[bond])
 
-        if auto_construct:
+        if auto_construct is True:
             atoms_ads = catkit.gen.molecules.get_3D_positions(atoms_ads, bond)
+        elif auto_construct == 'autorotate':
+            succ = nx.dfs_successors(atoms_ads.graph, bond)
+            if bond in succ:
+                a1 = sum([atoms_ads[int(ii)].position for ii in succ[bond]])
+                a2 = [0, 0, 1]
+                atoms_ads.rotate(a1, a2)
 
         if self.connections[site] == 2:
             coords_brg = self.coords_surf[r1top]
@@ -1280,11 +1297,32 @@ class Builder(AdsorptionSites):
             slab = self.slab
         slab = slab.copy()
         
+        if auto_construct == 'autorotate':
+            atoms_ads.translate(-atoms_ads[bonds[0]].position)
+            d_bond = atoms_ads[bonds[1]].position-atoms_ads[bonds[0]].position
+            atoms_ads.rotate(d_bond, [1, 0, 0])
+            a1 = np.zeros(3)
+            for bond in bonds: 
+                succ = nx.dfs_successors(atoms_ads.graph, bond)
+                if bond in succ:
+                    a1 += sum([atoms_ads[int(i)].position for i in succ[bond]])
+            a1[0] = 0.
+            if (np.abs(a1) > 0.).any():
+                a2 = [0, 0, 1]
+                b1 = [1, 0, 0]
+                b2 = [1, 0, 0]
+                rot_matrix = rotation_matrix(a1, a2, b1, b2)
+                for k, _ in enumerate(atoms_ads):
+                    atoms_ads[k].position = np.dot(
+                        atoms_ads[k].position, rot_matrix.T
+                    )
+        
         # Get adsorption vector
         zvectors = [self.get_adsorption_vector_edge(edge=edge)]*2
 
         old_positions = [
-            atoms_ads[bonds[0]].position, atoms_ads[bonds[1]].position]
+            atoms_ads[bonds[0]].position, atoms_ads[bonds[1]].position
+        ]
         new_positions = coords_edge.copy()
 
         # Iterate to position the adsorbate close to all the atoms of the edge
